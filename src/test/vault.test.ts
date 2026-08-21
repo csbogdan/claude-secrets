@@ -395,6 +395,20 @@ describe('payloads', () => {
     assert.throws(() => normalisePayload('env_bundle', 'not a dotenv file at all'), PayloadError);
     assert.throws(() => normalisePayload('env_bundle', '"TOKEN": "xxxx=abc"'), PayloadError);
 
+    // .env cannot express a multi-line value: the tail would be silently dropped, so the
+    // write path refuses it rather than storing a truncated credential.
+    assert.throws(
+      () => normalisePayload('env_bundle', 'A=1\nCREDS=-----BEGIN-----\nabc\n-----END-----'),
+      PayloadError,
+    );
+    // The same bundle as JSON is fine — that form can hold it.
+    assert.deepEqual(
+      normalisePayload('env_bundle', JSON.stringify({ A: '1', CREDS: 'x\ny' })),
+      { A: '1', CREDS: 'x\ny' },
+    );
+    // parseDotenv itself stays lenient — that is its documented contract.
+    assert.deepEqual(parseDotenv('A=1\njunk'), { A: '1' });
+
     assert.throws(() => normalisePayload('oauth', { refresh_token: 'r' }), PayloadError);
     assert.doesNotThrow(() => normalisePayload('oauth', { access_token: 'a', expires_at: 123 }));
   });

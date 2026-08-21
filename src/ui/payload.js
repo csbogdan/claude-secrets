@@ -25,9 +25,12 @@ export function fmtValue(type, v) {
   if (v === null || v === undefined) return '';
   if (typeof v !== 'object') return String(v);
   if (type === 'env_bundle') {
-    return Object.entries(v)
-      .map(([k, x]) => `${k}=${x}`)
-      .join('\n');
+    const pairs = Object.entries(v);
+    // .env has no line continuation, so a value containing a newline cannot be shown as
+    // KEY=value without the tail being read back as separate junk lines. Show JSON instead.
+    if (pairs.every(([, x]) => !String(x).includes('\n'))) {
+      return pairs.map(([k, x]) => `${k}=${x}`).join('\n');
+    }
   }
   const field = PRIMARY[type];
   // Bare scalar only when the payload holds nothing else a round-trip would drop.
@@ -72,6 +75,7 @@ if (typeof process !== 'undefined' && process.argv?.[1]?.endsWith('payload.js'))
   // What the server does with a bare string, so the round-trip can be compared to the payload.
   const rewrap = (type, out) => {
     if (typeof out !== 'string') return out;
+    if (out.startsWith('{')) return JSON.parse(out);
     if (type !== 'env_bundle') return { [PRIMARY[type]]: out };
     return Object.fromEntries(
       out
@@ -93,6 +97,8 @@ if (typeof process !== 'undefined' && process.argv?.[1]?.endsWith('payload.js'))
     ['oauth', { access_token: 'a' }],
     ['oauth', { access_token: 'a', refresh_token: 'r', expires_at: 1700000000 }],
     ['env_bundle', { API_KEY: 'abc', DATABASE_URL: 'postgres://x' }],
+    // A multi-line value cannot survive as .env text, so it must be shown as JSON.
+    ['env_bundle', { PROJECT: 'acme', CREDS: '-----BEGIN KEY-----\nabc\n-----END-----' }],
   ];
 
   for (const [type, payload] of cases) {

@@ -110,6 +110,20 @@ function parseEnvText(text: string): Record<string, string> {
       // Not JSON after all — fall through and read it as .env text.
     }
   }
+  // parseDotenv is deliberately lenient: it skips whatever it cannot read. On the way
+  // *into* the vault that leniency is silent data loss — the second line of a multi-line
+  // value, or a stray line, would vanish from a credential. Refuse instead.
+  // The offending line is named by number only: it may itself be secret material.
+  const bad = text
+    .split(/\r?\n/)
+    .findIndex((l) => l.trim() && !l.trim().startsWith('#') && l.trim().indexOf('=') <= 0);
+  if (bad !== -1) {
+    throw new PayloadError(
+      `line ${bad + 1} is not KEY=value — an env bundle takes .env text or a JSON object of ` +
+        'strings. .env cannot hold a multi-line value; use the JSON form for those',
+    );
+  }
+
   const out = parseDotenv(text);
   if (!Object.keys(out).length) {
     throw new PayloadError(
