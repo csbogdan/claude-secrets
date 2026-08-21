@@ -1,0 +1,542 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>secrets</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --border: #e4e2dd; --text: #1a1917; --dim: #75716b;
+    --accent: #2f6f4f; --danger: #a4372a; --warn: #8a6d1f; --code: #f2f1ee;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --panel: #1e1e22; --border: #32323a; --text: #e8e6e3; --dim: #928e88;
+      --accent: #6cc48f; --danger: #e08272; --warn: #d9b957; --code: #26262b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", sans-serif;
+  }
+  code, .mono, input, textarea, select { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  header {
+    display: flex; gap: 12px; align-items: center; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 0; z-index: 10; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+  .pill {
+    font-size: 12px; padding: 2px 9px; border-radius: 99px;
+    border: 1px solid var(--border); color: var(--dim);
+  }
+  .pill.ok { color: var(--accent); border-color: currentColor; }
+  .pill.bad { color: var(--danger); border-color: currentColor; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; font-size: 13px; padding: 5px 11px; cursor: pointer;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  button:hover { border-color: var(--dim); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, textarea, select {
+    font-size: 13px; padding: 6px 9px; width: 100%;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+  }
+  input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea { min-height: 88px; resize: vertical; }
+  main { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; padding: 16px; align-items: start; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  .panel > h2 {
+    margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); padding: 10px 14px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel > .body { padding: 14px; }
+  .list { max-height: 62vh; overflow-y: auto; }
+  .item { padding: 9px 14px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .item:last-child { border-bottom: 0; }
+  .item:hover { background: var(--code); }
+  .item.sel { background: var(--code); box-shadow: inset 3px 0 0 var(--accent); }
+  .item .n { font-weight: 600; font-size: 13px; }
+  .item .d { color: var(--dim); font-size: 12px; margin-top: 1px; }
+  .tag {
+    display: inline-block; font-size: 11px; padding: 0 6px; margin: 2px 3px 0 0;
+    border: 1px solid var(--border); border-radius: 4px; color: var(--dim);
+  }
+  .field { margin-bottom: 11px; }
+  .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 3px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: 1; min-width: 120px; }
+  pre.val {
+    background: var(--code); padding: 10px 12px; border-radius: 6px; margin: 0;
+    white-space: pre-wrap; word-break: break-all; font-size: 12.5px; max-height: 240px; overflow: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  td, th { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--dim); font-weight: 500; }
+  #feed {
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--code);
+    padding: 10px 12px; height: 190px; overflow-y: auto; white-space: pre-wrap; margin: 0;
+  }
+  #feed .warn { color: var(--warn); }
+  #feed .error { color: var(--danger); }
+  .empty { color: var(--dim); padding: 22px 14px; text-align: center; font-size: 13px; }
+  .note { color: var(--dim); font-size: 12px; margin-top: 6px; }
+  .banner { padding: 9px 14px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .banner.warn { color: var(--warn); }
+  .banner.bad { color: var(--danger); }
+  .tabs { display: flex; gap: 4px; }
+  .tabs button { border-radius: 6px 6px 0 0; border-bottom-color: transparent; }
+  .tabs button[aria-selected="true"] { background: var(--code); border-bottom-color: var(--code); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>secrets</h1>
+  <span class="pill" id="status">connecting…</span>
+  <span class="spacer"></span>
+  <button id="btn-new">+ New</button>
+  <button id="btn-lock">Lock</button>
+  <button id="btn-backup">Backup</button>
+  <button id="btn-token">Password</button>
+</header>
+
+<div id="banner"></div>
+
+<main>
+  <section class="panel">
+    <h2>Secrets <span class="spacer"></span><span id="count" class="pill"></span></h2>
+    <div class="body" style="padding-bottom:0">
+      <input id="q" type="search" placeholder="Search: &quot;stripe test key&quot;, &quot;prod database&quot;…" autocomplete="off" />
+      <p class="note">Searches names, aliases, descriptions and tags — never values.</p>
+    </div>
+    <div class="list" id="list"></div>
+  </section>
+
+  <section class="panel">
+    <h2 id="detail-title">Detail</h2>
+    <div class="body" id="detail">
+      <p class="empty">Select a secret, or press <strong>+ New</strong>.</p>
+    </div>
+  </section>
+</main>
+
+<section class="panel" style="margin:0 16px 16px">
+  <h2>Activity <span class="spacer"></span><span class="pill" id="feed-state">live</span></h2>
+  <pre id="feed"></pre>
+</section>
+
+<script type="module">
+import { fmtValue, parseValue } from '/ui/payload.js';
+
+const TYPES = ['api_key','oauth','key_file','connection_string','env_bundle','note'];
+const $ = (s) => document.querySelector(s);
+const el = (t, props = {}, kids = []) => {
+  const n = Object.assign(document.createElement(t), props);
+  for (const k of [].concat(kids)) n.append(k);
+  return n;
+};
+
+let token = sessionStorage.getItem('secretd_password') || '';
+let selected = null;
+let items = [];
+
+// ---------------------------------------------------------------- transport
+
+async function api(method, path, { query, body } = {}) {
+  const url = new URL(path, location.origin);
+  for (const [k, v] of Object.entries(query || {})) {
+    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+  }
+  const headers = { 'x-secretd-caller': 'ui' };
+  if (token) headers['authorization'] = `Bearer ${token}`;
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  const text = await res.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { error: text.slice(0, 300) }; }
+  if (!res.ok) {
+    const err = new Error(data.error || `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    err.candidates = data.candidates || [];
+    throw err;
+  }
+  return data;
+}
+
+function banner(msg, kind = 'warn') {
+  $('#banner').innerHTML = '';
+  if (!msg) return;
+  $('#banner').append(el('div', { className: `banner ${kind}`, textContent: msg }));
+}
+
+// The vault password is the only credential. Kept in sessionStorage rather than
+// localStorage so it dies with the tab instead of persisting on disk.
+function requireToken(force) {
+  if (token && !force) return true;
+  const t = prompt('Vault password:', '');
+  if (t === null) return false;
+  token = t.trim();
+  sessionStorage.setItem('secretd_password', token);
+  return true;
+}
+
+// ------------------------------------------------------------------- status
+
+async function refreshStatus() {
+  try {
+    const h = await api('GET', '/api/health');
+    const pill = $('#status');
+    if (!h.initialised) {
+      pill.textContent = 'not initialised'; pill.className = 'pill bad';
+      banner('Vault not initialised — run `secrets init` on the host.', 'bad');
+    } else if (h.locked) {
+      pill.textContent = 'locked'; pill.className = 'pill bad';
+      banner('Vault is locked. Enter the password below to unlock it.', 'warn');
+      renderUnlock();
+    } else {
+      pill.textContent = 'unlocked'; pill.className = 'pill ok';
+      banner('');
+    }
+    $('#btn-lock').textContent = h.locked ? 'Unlock' : 'Lock';
+    return h;
+  } catch (e) {
+    $('#status').textContent = 'unreachable';
+    $('#status').className = 'pill bad';
+    banner(`Cannot reach secretd: ${e.message}`, 'bad');
+    return null;
+  }
+}
+
+function renderUnlock() {
+  const pass = el('input', { type: 'password', placeholder: 'Vault password' });
+  const go = el('button', { className: 'primary', textContent: 'Unlock' });
+  go.onclick = async () => {
+    try {
+      await api('POST', '/api/unlock', { body: { passphrase: pass.value } });
+      // Same secret unlocks and authenticates, so adopt it for subsequent calls.
+      token = pass.value;
+      sessionStorage.setItem('secretd_password', token);
+      await refreshStatus(); await load();
+    } catch (e) { banner(e.message, 'bad'); }
+  };
+  $('#detail-title').textContent = 'Unlock vault';
+  $('#detail').replaceChildren(el('div', { className: 'field' }, [pass]), go);
+}
+
+// --------------------------------------------------------------------- list
+
+async function load() {
+  const q = $('#q').value.trim();
+  try {
+    items = q ? await api('GET', '/api/search', { query: { q, limit: 50 } })
+              : await api('GET', '/api/secrets');
+    items = items.items || items;
+  } catch (e) {
+    if (e.status === 401) { if (requireToken(true)) return load(); }
+    if (e.status === 423) { renderUnlock(); }
+    banner(e.message, 'bad');
+    items = [];
+  }
+  $('#count').textContent = `${items.length}`;
+  const list = $('#list');
+  list.replaceChildren();
+  if (!items.length) {
+    list.append(el('p', { className: 'empty', textContent: q ? `No matches for "${q}"` : 'No secrets yet.' }));
+    return;
+  }
+  for (const it of items) {
+    const node = el('div', { className: 'item' + (selected === it.name ? ' sel' : '') }, [
+      el('div', { className: 'n mono', textContent: it.name }),
+      el('div', { className: 'd', textContent: [it.type, it.env, it.description].filter(Boolean).join(' · ') }),
+      ...(it.aliases?.length ? [el('div', {}, it.aliases.map((a) => el('span', { className: 'tag', textContent: a })))] : []),
+    ]);
+    node.onclick = () => showDetail(it.name);
+    list.append(node);
+  }
+}
+
+// ------------------------------------------------------------------- detail
+
+async function showDetail(name) {
+  selected = name;
+  await load();
+  let rec;
+  try {
+    rec = await api('GET', '/api/secret', { query: { name, mask: '1' } });
+  } catch (e) { banner(e.message, 'bad'); return; }
+
+  $('#detail-title').textContent = name;
+  const body = $('#detail');
+  body.replaceChildren();
+
+  if (rec.stale) body.append(el('p', { className: 'banner warn', textContent: 'This token is expired and could not be refreshed.' }));
+
+  const valBox = el('pre', { className: 'val mono', textContent: fmtValue(rec.type, rec.value) });
+  const reveal = el('button', { textContent: 'Reveal value' });
+  let revealed = false;
+  reveal.onclick = async () => {
+    if (revealed) {
+      valBox.textContent = fmtValue(rec.type, rec.value);
+      reveal.textContent = 'Reveal value'; revealed = false; return;
+    }
+    try {
+      const full = await api('GET', '/api/secret', { query: { name } });
+      valBox.textContent = fmtValue(full.type, full.value);
+      reveal.textContent = 'Hide value'; revealed = true;
+    } catch (e) { banner(e.message, 'bad'); }
+  };
+  const copy = el('button', { textContent: 'Copy' });
+  copy.onclick = async () => {
+    try {
+      const full = await api('GET', '/api/secret', { query: { name } });
+      await navigator.clipboard.writeText(full.primary ?? JSON.stringify(full.value));
+      copy.textContent = 'Copied'; setTimeout(() => (copy.textContent = 'Copy'), 1200);
+    } catch (e) { banner(e.message, 'bad'); }
+  };
+
+  body.append(
+    el('div', { className: 'field' }, [
+      el('label', { textContent: `value · ${rec.type} · v${rec.current_version}` }),
+      valBox,
+      el('div', { className: 'row', style: 'margin-top:8px' }, [reveal, copy]),
+    ]),
+    metaTable(rec),
+    el('div', { className: 'row', style: 'margin-top:12px' }, [
+      btn('Edit metadata', () => renderForm(rec)),
+      btn('New value', () => renderNewValue(rec)),
+      btn('Versions', () => renderVersions(name)),
+      btn('Delete', async () => {
+        if (!confirm(`Delete ${name} and its entire version history? This cannot be undone.`)) return;
+        await api('DELETE', '/api/secret', { query: { name } });
+        selected = null; $('#detail').replaceChildren(el('p', { className: 'empty', textContent: 'Deleted.' }));
+        $('#detail-title').textContent = 'Detail'; await load();
+      }, 'danger'),
+    ]),
+  );
+}
+
+function metaTable(rec) {
+  const rows = [
+    ['type', rec.type], ['service', rec.service], ['env', rec.env],
+    ['description', rec.description], ['tags', (rec.tags || []).join(', ')],
+    ['aliases', (rec.aliases || []).join(', ')], ['url', rec.url],
+    ['updated', new Date(rec.updated_at * 1000).toLocaleString()],
+  ].filter(([, v]) => v);
+  return el('table', {}, rows.map(([k, v]) =>
+    el('tr', {}, [el('th', { textContent: k }), el('td', { className: 'mono', textContent: String(v) })])));
+}
+
+async function renderVersions(name) {
+  const { items: vs } = await api('GET', '/api/versions', { query: { name } });
+
+  // Viewing is a plain read: no rollback, no new version, nothing restored.
+  const label = el('label', { style: 'display:none' });
+  const out = el('pre', { className: 'val mono', style: 'display:none' });
+  const view = async (v) => {
+    try {
+      const rec = await api('GET', '/api/secret', { query: { name, version: v.version } });
+      label.textContent = `v${rec.version} of ${name}${v.current ? ' (current)' : ''}`;
+      out.textContent = fmtValue(rec.type, rec.value);
+      label.style.display = out.style.display = '';
+    } catch (e) { banner(e.message, 'bad'); }
+  };
+
+  const rows = vs.map((v) => el('tr', {}, [
+    el('td', { className: 'mono', textContent: `v${v.version}${v.current ? ' *' : ''}` }),
+    el('td', { textContent: new Date(v.created_at * 1000).toLocaleString() }),
+    el('td', { textContent: v.note }),
+    el('td', {}, [
+      btn('View', () => view(v)),
+      v.current ? el('span', { className: 'tag', textContent: 'current' })
+        : btn('Restore', async () => {
+            if (!confirm(`Restore ${name} to v${v.version}? This writes a new current version.`)) return;
+            await api('POST', '/api/rollback', { body: { name, version: v.version } });
+            showDetail(name);
+          }),
+    ]),
+  ]));
+  $('#detail').replaceChildren(
+    el('table', {}, [el('tr', {}, ['version', 'when', 'note', ''].map((h) => el('th', { textContent: h }))), ...rows]),
+    el('div', { className: 'field', style: 'margin-top:12px' }, [label, out]),
+    el('div', { style: 'margin-top:12px' }, [btn('Back', () => showDetail(name))]),
+  );
+}
+
+function renderNewValue(rec) {
+  const ta = el('textarea', { placeholder: valuePlaceholder(rec.type) });
+  const note = el('input', { placeholder: 'Why? e.g. "rotated after leak"' });
+  $('#detail').replaceChildren(
+    el('div', { className: 'field' }, [el('label', { textContent: `new value (${rec.type})` }), ta]),
+    el('div', { className: 'field' }, [el('label', { textContent: 'note' }), note]),
+    el('div', { className: 'row' }, [
+      btn('Save new version', async () => {
+        try {
+          await api('PUT', '/api/secret', { query: { name: rec.name }, body: { value: parseValue(rec.type, ta.value), note: note.value } });
+          showDetail(rec.name);
+        } catch (e) { banner(e.message, 'bad'); }
+      }, 'primary'),
+      btn('Cancel', () => showDetail(rec.name)),
+    ]),
+  );
+}
+
+function renderForm(rec) {
+  const isNew = !rec;
+  const f = {
+    name: el('input', { value: rec?.name || '', placeholder: 'stripe/test/sk', disabled: !isNew }),
+    type: el('select', {}, TYPES.map((t) => el('option', { value: t, textContent: t, selected: rec?.type === t }))),
+    value: el('textarea', { placeholder: valuePlaceholder(rec?.type || 'api_key') }),
+    description: el('input', { value: rec?.description || '', placeholder: 'Stripe test mode secret key' }),
+    service: el('input', { value: rec?.service || '', placeholder: 'stripe' }),
+    env: el('input', { value: rec?.env || '', placeholder: 'test' }),
+    tags: el('input', { value: (rec?.tags || []).join(', '), placeholder: 'payments, billing' }),
+    aliases: el('input', { value: (rec?.aliases || []).join(', '), placeholder: 'stripe-test' }),
+    url: el('input', { value: rec?.url || '', placeholder: 'https://dashboard.stripe.com' }),
+  };
+  f.type.disabled = !isNew;
+  f.type.onchange = () => (f.value.placeholder = valuePlaceholder(f.type.value));
+
+  const field = (label, node) => el('div', { className: 'field' }, [el('label', { textContent: label }), node]);
+  const parts = [
+    field('name', f.name),
+    el('div', { className: 'row' }, [field('type', f.type), field('service', f.service), field('env', f.env)]),
+    ...(isNew ? [field('value', f.value)] : []),
+    field('description', f.description),
+    el('div', { className: 'row' }, [field('tags (comma separated)', f.tags), field('aliases (comma separated)', f.aliases)]),
+    field('url', f.url),
+    el('p', { className: 'note', textContent: 'Description and aliases are what make natural-language search work later.' }),
+  ];
+
+  const save = btn(isNew ? 'Create' : 'Save', async () => {
+    const meta = {
+      description: f.description.value, service: f.service.value, env: f.env.value, url: f.url.value,
+      tags: splitList(f.tags.value), aliases: splitList(f.aliases.value),
+    };
+    try {
+      if (isNew) {
+        await api('POST', '/api/secret', {
+          body: { name: f.name.value.trim(), type: f.type.value, value: parseValue(f.type.value, f.value.value), ...meta },
+        });
+        $('#q').value = ''; await load(); showDetail(f.name.value.trim());
+      } else {
+        await api('PATCH', '/api/secret', { query: { name: rec.name }, body: meta });
+        showDetail(rec.name);
+      }
+    } catch (e) { banner(e.message, 'bad'); }
+  }, 'primary');
+
+  $('#detail-title').textContent = isNew ? 'New secret' : `Edit ${rec.name}`;
+  $('#detail').replaceChildren(...parts, el('div', { className: 'row' }, [
+    save, btn('Cancel', () => (rec ? showDetail(rec.name) : clearDetail())),
+  ]));
+}
+
+function clearDetail() {
+  selected = null;
+  $('#detail-title').textContent = 'Detail';
+  $('#detail').replaceChildren(el('p', { className: 'empty', textContent: 'Select a secret, or press + New.' }));
+  load();
+}
+
+// ------------------------------------------------------------------ helpers
+
+function btn(text, onclick, cls = '') {
+  const b = el('button', { textContent: text, className: cls });
+  b.onclick = onclick;
+  return b;
+}
+const splitList = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+
+function valuePlaceholder(type) {
+  return {
+    api_key: 'sk_test_abc123',
+    oauth: '{"access_token":"...","refresh_token":"...","token_url":"https://...","expires_at":1700000000}',
+    key_file: '-----BEGIN OPENSSH PRIVATE KEY-----\n…',
+    connection_string: 'postgres://user:pass@host:5432/db',
+    env_bundle: 'API_KEY=abc\nDATABASE_URL=postgres://…',
+    note: 'free text',
+  }[type] || '';
+}
+
+// --------------------------------------------------------------------- feed
+
+async function streamFeed() {
+  const feed = $('#feed');
+  const push = (line, level) => {
+    const atBottom = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 30;
+    feed.append(el('div', { textContent: line, className: level === 'info' ? '' : level }));
+    while (feed.childElementCount > 400) feed.firstElementChild.remove();
+    if (atBottom) feed.scrollTop = feed.scrollHeight;
+  };
+  for (;;) {
+    try {
+      $('#feed-state').textContent = 'live';
+      $('#feed-state').className = 'pill ok';
+      const headers = { 'x-secretd-caller': 'ui' };
+      if (token) headers['authorization'] = `Bearer ${token}`;
+      const res = await fetch('/api/logs?follow=1', { headers });
+      if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const p of parts) {
+          const line = p.split('\n').find((l) => l.startsWith('data: '));
+          if (!line) continue;
+          try { const e = JSON.parse(line.slice(6)); push(e.line, e.level); } catch { /* ignore */ }
+        }
+      }
+    } catch {
+      $('#feed-state').textContent = 'reconnecting…';
+      $('#feed-state').className = 'pill bad';
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
+// --------------------------------------------------------------------- init
+
+$('#btn-new').onclick = () => renderForm(null);
+$('#btn-token').onclick = () => { if (requireToken(true)) { load(); refreshStatus(); } };
+$('#btn-backup').onclick = async () => {
+  try {
+    const r = await api('POST', '/api/backup');
+    banner(`Backup written: ${r.path} (${(r.bytes / 1024).toFixed(0)} KiB, ${r.pruned} pruned)`, 'warn');
+  } catch (e) { banner(e.message, 'bad'); }
+};
+$('#btn-lock').onclick = async () => {
+  const h = await api('GET', '/api/health');
+  if (h.locked) return renderUnlock();
+  await api('POST', '/api/lock');
+  await refreshStatus();
+  clearDetail();
+};
+
+let debounce;
+$('#q').oninput = () => { clearTimeout(debounce); debounce = setTimeout(load, 180); };
+
+(async () => {
+  if (!token) requireToken(false);
+  await refreshStatus();
+  await load();
+  streamFeed();
+  setInterval(refreshStatus, 30000);
+})();
+</script>
+</body>
+</html>
