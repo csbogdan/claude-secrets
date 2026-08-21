@@ -6,6 +6,35 @@ Claude Code can find and use credentials by name.
 
 See [SPEC.md](SPEC.md) for the design and the accepted-risk register.
 
+## Read this first
+
+**This is a single-user tool for one trusted machine on a trusted network. It is not
+hardened and it is not trying to be. It assumes a safe environment, and gives you very
+little once that assumption is wrong.**
+
+- **One operator, no multi-tenancy.** No users, no roles, no per-secret permissions, no
+  rate limiting. Anyone who can reach the daemon with the password is you.
+- **Plain HTTP on `0.0.0.0`.** No TLS, and the daemon is reachable from the whole LAN by
+  default. Your password and your secret values cross the network in cleartext — and the
+  password *is* the key, so sniffing it decrypts `vault.db` and every backup, offline and
+  forever.
+- **Your login session is the perimeter.** The passphrase is escrowed in the login
+  Keychain so the daemon can unlock itself unattended after a reboot. Anything running as
+  you can read it, and therefore every secret you own. That is already true of `~/.claude`.
+- **Values reach Claude in plaintext.** Anything `get_secret` returns enters the
+  transcript, goes to the API, and persists unencrypted in `~/.claude/projects/*.jsonl`.
+- **The inventory is not secret.** Metadata is unencrypted so full-text search can index
+  it. The DB file reveals every name, description, service and tag you have stored.
+- **Lose the passphrase and everything is gone.** No recovery key, no escrow, no reset.
+
+What it *does* buy you: values encrypted at rest with Argon2id + XChaCha20-Poly1305, so a
+stolen `vault.db` or backup is useless on its own, and an audit log of every read. Treat
+the audit log — not the crypto — as the practical boundary.
+
+Do not put this on an untrusted network, a shared machine, or in front of anything whose
+compromise costs more than your own convenience. Every point above is a deliberate trade
+recorded in [SPEC.md](SPEC.md#accepted-risks), not an oversight to report.
+
 ## Install
 
 ```sh
@@ -129,7 +158,9 @@ secrets status                                  # reachable? locked? how many?
 secrets unlock                                  # after a reboot with no Keychain escrow
 secrets audit --secret github/pat                # who read what, when, from where
 secrets backup                                   # snapshot now (nightly is automatic)
-secrets versions github/pat && secrets rollback github/pat 3
+secrets versions github/pat                      # history
+secrets get github/pat --version 3               # view an old one WITHOUT restoring it
+secrets rollback github/pat 3                    # restore it (writes a new version)
 launchctl kickstart -k gui/$(id -u)/com.stefan.secretd   # restart the daemon
 tail -f ~/.secretd/logs/secretd.log
 ```
@@ -155,6 +186,6 @@ one audit log, one source of truth.
 
 ```sh
 npm run build      # tsc + copy UI assets
-npm test           # build, then 29 vault tests
+npm test           # build, then 33 vault tests
 npm run typecheck
 ```
