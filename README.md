@@ -79,7 +79,19 @@ Run something without the value ever touching your terminal or Claude's context:
 secrets exec github/pat -- gh repo list
 secrets exec deploy-key:file -- ssh -i {{deploy-key}} host
 secrets exec myapp/env -- npm test      # env_bundle expands into every variable
+secrets exec vpn/login:totp -- vpn-cli --otp $VPN_LOGIN   # injects a code, not the seed
 ```
+
+`:totp` injects a *generated code*, which is only valid for its window — fine for a
+command that authenticates immediately, wrong for one that reads the variable a minute
+later. Use `:env` (the default) when you want the stored password.
+
+```sh
+secrets gen                             # 24 chars, no ambiguous l/1/I or 0/O
+secrets gen --length 32 --symbols
+```
+
+`gen` stores nothing and never touches the vault — pipe it into `secrets set` yourself.
 
 Web UI at `http://localhost:7777/` — full CRUD, version history, and the live feed.
 It asks once for your vault password, and keeps it only for the life of the tab.
@@ -158,7 +170,8 @@ claude mcp add secrets --scope user \
 No credential in that registration — the MCP server reads the vault password from your
 login Keychain when it needs it, so changing the password never breaks it.
 
-Twelve tools: `search_secrets`, `list_secrets`, `get_secret`, `get_totp`, `create_secret`,
+Thirteen tools: `search_secrets`, `list_secrets`, `get_secret`, `get_totp`,
+`generate_password`, `create_secret`,
 `update_secret`, `update_secret_metadata`, `delete_secret`, `list_versions`,
 `rollback_secret`, `run_with_secrets`, `vault_status`.
 
@@ -204,6 +217,6 @@ one audit log, one source of truth.
 
 ```sh
 npm run build      # tsc + copy UI assets
-npm test           # build, then 41 vault tests
+npm test           # build, then 45 vault tests
 npm run typecheck
 ```

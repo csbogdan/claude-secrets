@@ -4,6 +4,7 @@ import { initCrypto } from '../vault/crypto.js';
 import { Vault, LockedError, ConflictError, NotFoundError } from '../vault/vault.js';
 import { parseDotenv, normalisePayload, primaryValue, maskValue, PayloadError } from '../vault/types.js';
 import { totpCode, totpFrom, parseOtpauth, base32Decode, TotpError } from '../vault/totp.js';
+import { generatePassword, GenerateError } from '../vault/generate.js';
 
 const PASS = 'correct horse battery staple';
 
@@ -567,5 +568,47 @@ describe('1password-shaped types', () => {
     assert.equal(v.read('bank/card').value['number' as never], '4111111111111111');
     assert.equal(v.read('site/login').value['totp' as never], 'JBSWY3DPEHPK3PXP');
     v.close();
+  });
+});
+
+
+describe('password generation', () => {
+  test('honours length and the requested character classes', () => {
+    for (const length of [8, 24, 64, 256]) {
+      assert.equal(generatePassword({ length }).length, length);
+    }
+    const plain = generatePassword({ length: 40 });
+    assert.match(plain, /[a-z]/);
+    assert.match(plain, /[A-Z]/);
+    assert.match(plain, /[2-9]/);
+    assert.doesNotMatch(plain, /[!@#$%^&*\-_=+?]/, 'symbols are off by default');
+    assert.match(generatePassword({ length: 40, symbols: true }), /[!@#$%^&*\-_=+?]/);
+    assert.doesNotMatch(generatePassword({ length: 200, upper: false, digits: false }), /[A-Z2-9]/);
+  });
+
+  test('excludes glyphs that are misread when typed from a screen', () => {
+    // 200 chars x 40 draws is enough that a present character would almost surely appear.
+    for (let i = 0; i < 40; i++) {
+      assert.doesNotMatch(generatePassword({ length: 200, symbols: true }), /[l1IO0]/);
+    }
+  });
+
+  test('the required-class characters are not always at the front', () => {
+    // They are placed one per group, then shuffled. Without the shuffle, position 0
+    // would be lowercase every time.
+    const firsts = new Set(Array.from({ length: 60 }, () => generatePassword({ length: 12 })[0]));
+    assert.ok(firsts.size > 1, 'first character varies');
+    assert.ok(
+      Array.from(firsts).some((ch) => /[A-Z2-9]/.test(ch!)),
+      'not always lowercase — the shuffle ran',
+    );
+  });
+
+  test('two passwords are never the same, and bad lengths are refused', () => {
+    const seen = new Set(Array.from({ length: 500 }, () => generatePassword({ length: 24 })));
+    assert.equal(seen.size, 500);
+    for (const bad of [7, 257, 0, -1, 12.5]) {
+      assert.throws(() => generatePassword({ length: bad }), GenerateError, `length ${bad}`);
+    }
   });
 });

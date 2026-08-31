@@ -136,6 +136,17 @@ a code is worth 30 seconds, a seed is worth forever.
 their only text form is JSON. `secrets set` sends a string whatever you type, so
 `normalisePayload` parses it — the same reason an `env_bundle` accepts a JSON object.
 
+`run_with_secrets` takes an inject mode per secret: `env` (default), `file`, `stdin`, or
+`totp`, which substitutes a generated code for the stored value. The mode is validated in
+`runWithSecrets` rather than in each client — an unrecognised mode used to fall through to
+`env`, which once `totp` existed would hand over the password where a one-time code was
+asked for.
+
+Password generation (`vault/generate.ts`) is deliberately not an API endpoint: it reads no
+vault state, so the CLI and the MCP server call it directly rather than round-tripping
+through the daemon. Ambiguous glyphs are excluded because generated passwords get read off
+a screen and typed elsewhere.
+
 `key_file` reads return the PEM as a string over the API; `run_with_secrets` instead writes
 it to a `0600` temp file and passes the path, deleting it when the child exits.
 

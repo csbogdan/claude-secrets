@@ -4,9 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Vault } from '../vault/vault.js';
 import { primaryValue, type SecretType, type Payload } from '../vault/types.js';
+import { totpFrom } from '../vault/totp.js';
 import { log } from './log.js';
 
-export type InjectMode = 'env' | 'file' | 'stdin';
+export type InjectMode = 'env' | 'file' | 'stdin' | 'totp';
+
+export const INJECT_MODES: readonly InjectMode[] = ['env', 'file', 'stdin', 'totp'];
 
 export interface SecretMapping {
   name: string;
@@ -62,6 +65,12 @@ export async function runWithSecrets(
     for (const m of mappings) {
       const rec = vault.read(m.name);
       const mode: InjectMode = m.mode ?? 'env';
+      // Validated here rather than in each client: an unknown mode used to fall through
+      // to 'env', which since totp mode exists would inject the password where the
+      // caller asked for a one-time code.
+      if (!INJECT_MODES.includes(mode)) {
+        throw new Error(`unknown inject mode '${mode}' — one of: ${INJECT_MODES.join(', ')}`);
+      }
       const type = rec.type as SecretType;
       const payload = rec.value as Payload;
 
@@ -77,7 +86,11 @@ export async function runWithSecrets(
         continue;
       }
 
-      const value = primaryValue(type, payload);
+      // totp mode injects a generated code, not the stored secret.
+      // ponytail: the code is only valid for its window (30s by default), so this suits a
+      // command that authenticates immediately and not one that reads the variable later.
+      const value =
+        mode === 'totp' ? totpValue(payload, m.name) : primaryValue(type, payload);
       const varName = m.as ?? envNameFor(m.name);
       if (!ENV_NAME_RE.test(varName)) {
         throw new Error(
@@ -181,4 +194,13 @@ export async function runWithSecrets(
   } finally {
     if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
   }
+}
+
+/** The current code for a payload carrying a totp seed. */
+function totpValue(payload: Payload, name: string): string {
+  const spec = (payload as Record<string, unknown>)['totp'];
+  if (typeof spec !== 'string' || !spec.trim()) {
+    throw new Error(`secret '${name}' has no totp seed, so ':totp' has nothing to generate`);
+  }
+  return totpFrom(spec).code;
 }

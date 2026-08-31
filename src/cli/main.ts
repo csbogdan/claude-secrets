@@ -9,6 +9,7 @@ import { Vault } from '../vault/vault.js';
 import { loadConfig } from '../daemon/config.js';
 import { rememberPassword, forgetPassword, passwordSource } from '../shared/credentials.js';
 import { SECRET_TYPES, parseDotenv, type SecretType } from '../vault/types.js';
+import { generatePassword } from '../vault/generate.js';
 
 const USE_COLOR = process.stdout.isTTY && !process.env['NO_COLOR'];
 const c = {
@@ -35,6 +36,7 @@ ${c.bold('Read')}
   secrets search <query...>          natural-language lookup over metadata
   secrets get <name> [--json] [--mask] [--field F] [--version N]
   secrets totp <name>                current 2FA code for a secret with a totp seed
+  secrets gen [--length N] [--symbols]   generate a password (nothing is stored)
   secrets versions <name>
   secrets audit [--secret N] [--action A] [--limit N]
   secrets logs [-f]                  live activity feed
@@ -57,6 +59,7 @@ ${c.bold('Use without exposing the value')}
       Injects secrets into the child's environment. Values never hit your terminal.
       e.g. secrets exec github/pat -- gh repo list
            secrets exec deploy-key:file -- ssh -i {{deploy-key}} host
+           secrets exec vpn/login:totp -- vpn-cli --otp $VPN_LOGIN
 
 ${c.bold('Types')}  ${SECRET_TYPES.join(', ')}
 ${c.bold('Env')}    SECRETD_URL (${defaultBaseUrl()}), SECRETD_PASSWORD, SECRETD_HOME
@@ -97,6 +100,8 @@ async function main(): Promise<number> {
       note: { type: 'string' },
       field: { type: 'string' },
       version: { type: 'string' },
+      length: { type: 'string' },
+      symbols: { type: 'boolean' },
       name: { type: 'string' },
       'from-file': { type: 'string' },
       secret: { type: 'string' },
@@ -150,6 +155,8 @@ async function main(): Promise<number> {
       return cmdEdit(api, must(positionals[0], 'edit <name>'), v);
     case 'rm':
       return cmdRemove(api, must(positionals[0], 'rm <name>'));
+    case 'gen':
+      return cmdGen(v);
     case 'totp':
       return cmdTotp(api, must(positionals[0], 'totp <name>'), v);
     case 'versions':
@@ -408,6 +415,21 @@ async function cmdSet(
   return 0;
 }
 
+function cmdGen(v: Record<string, unknown>): number {
+  try {
+    process.stdout.write(
+      `${generatePassword({
+        ...(v['length'] === undefined ? {} : { length: Number(v['length']) }),
+        symbols: v['symbols'] === true,
+      })}\n`,
+    );
+    return 0;
+  } catch (e) {
+    process.stderr.write(c.red(`${e instanceof Error ? e.message : String(e)}\n`));
+    return 1;
+  }
+}
+
 async function cmdTotp(
   api: SecretdClient,
   name: string,
@@ -486,7 +508,7 @@ async function cmdExec(api: SecretdClient, spec: string, passthrough: string[]):
   }
   const secrets = spec.split(',').filter(Boolean).map((entry) => {
     const [name, mode] = entry.split(':');
-    return { name: name!.trim(), mode: (mode?.trim() as 'env' | 'file' | 'stdin') ?? 'env' };
+    return { name: name!.trim(), mode: (mode?.trim() as 'env' | 'file' | 'stdin' | 'totp') ?? 'env' };
   });
   const [command, ...args] = passthrough;
   const r = await api.exec(command!, args, secrets);

@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { SecretdClient, ApiError, defaultBaseUrl, defaultPassword } from '../shared/client.js';
 import { SECRET_TYPES } from '../vault/types.js';
+import { generatePassword } from '../vault/generate.js';
 
 // stdout is the MCP protocol channel — every diagnostic must go to stderr.
 const note = (msg: string): void => void process.stderr.write(`[secrets-mcp] ${msg}\n`);
@@ -155,6 +156,22 @@ server.registerTool(
         ...(rec.refreshed ? { note: 'Token was auto-refreshed; a new version was stored.' } : {}),
       };
     }),
+);
+
+server.registerTool(
+  'generate_password',
+  {
+    title: 'Generate a password',
+    description:
+      'Generate a random password. Pure computation — it touches no vault and stores nothing, so store the result with create_secret or update_secret if it is meant to last. Ambiguous characters (l/1/I, 0/O) are excluded so the result survives being read off a screen.',
+    inputSchema: {
+      length: z.number().int().min(8).max(256).optional().describe('Default 24'),
+      symbols: z.boolean().optional().describe('Include punctuation. Default false — many sites reject it'),
+      digits: z.boolean().optional().describe('Default true'),
+      upper: z.boolean().optional().describe('Default true'),
+    },
+  },
+  async (opts) => guard(async () => ({ password: generatePassword(opts) })),
 );
 
 server.registerTool(
