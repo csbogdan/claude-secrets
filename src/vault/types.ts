@@ -163,6 +163,50 @@ export function normalisePayload(type: SecretType, value: unknown): Payload {
 
 export class PayloadError extends Error {}
 
+/**
+ * Fields that are not secret in themselves. Used to mask payloads on the way out and to
+ * mark inputs in the UI. An allowlist, so a field added later is treated as secret until
+ * someone decides otherwise — for a vault that is the right direction to be wrong in.
+ */
+export const PUBLIC_FIELDS = new Set([
+  'host', 'port', 'database', 'user', 'username', 'scopes', 'expires_at', 'fingerprint',
+  'brand', 'cardholder', 'expiry', 'bank', 'holder', 'issuer', 'account',
+  'digits', 'period', 'algorithm',
+]);
+
+const MULTILINE_FIELDS = new Set(['pem', 'text', 'address', 'notes']);
+
+export interface FieldSpec {
+  name: string;
+  required: boolean;
+  multiline: boolean;
+  numeric: boolean;
+  secret: boolean;
+}
+
+/**
+ * The shape of a type, derived from its schema so a client can render a real form
+ * instead of asking someone to hand-write JSON. Returns [] for `env_bundle`, which is
+ * an open record of keys rather than a fixed set of fields.
+ */
+export function describeType(type: SecretType): FieldSpec[] {
+  type ZodLike = { isOptional(): boolean; _def?: { typeName?: string; innerType?: ZodLike } };
+  const schema = PAYLOAD_SCHEMAS[type] as unknown as {
+    shape?: Record<string, ZodLike>;
+    _def?: { schema?: { shape?: Record<string, ZodLike> } };
+  };
+  // `.refine()` wraps the object one level deeper.
+  const shape = schema.shape ?? schema._def?.schema?.shape;
+  if (!shape) return [];
+  return Object.entries(shape).map(([name, f]) => ({
+    name,
+    required: !f.isOptional(),
+    multiline: MULTILINE_FIELDS.has(name),
+    numeric: (f._def?.innerType?._def?.typeName ?? f._def?.typeName) === 'ZodNumber',
+    secret: !PUBLIC_FIELDS.has(name),
+  }));
+}
+
 /** Field names of a payload schema — `.refine()` wraps the object one level deeper. */
 function fieldsOf(type: SecretType): string[] {
   const schema = PAYLOAD_SCHEMAS[type] as unknown as {

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, sep } from 'node:path';
 import { Vault, VaultError, NotFoundError, LockedError } from '../vault/vault.js';
-import { primaryValue, maskValue, SECRET_TYPES, type SecretType, type Payload } from '../vault/types.js';
+import { primaryValue, maskValue, SECRET_TYPES, type SecretType, type Payload , describeType, PUBLIC_FIELDS } from '../vault/types.js';
 import type { Config } from './config.js';
 import { feed, formatEvent, log, type FeedEvent } from './log.js';
 import { refreshIfNeeded, isExpired } from './oauth.js';
@@ -170,6 +170,14 @@ async function handle(
           primary: primary === null ? null : mask ? maskValue(primary) : primary,
           stale: out.stale,
           refreshed: out.refreshed,
+        });
+        return;
+      }
+
+      case 'GET /api/schema': {
+        // Field shapes, so the UI can render a form per type. No vault data involved.
+        json(res, 200, {
+          types: Object.fromEntries(SECRET_TYPES.map((t) => [t, describeType(t)])),
         });
         return;
       }
@@ -402,19 +410,12 @@ function maskPayload(type: SecretType, payload: Payload): Payload {
       Object.entries(payload as Record<string, string>).map(([k, v]) => [k, maskValue(v)]),
     );
   }
-  // An allowlist, not a denylist. A denylist fails open: every field added to a payload
-  // is rendered in full until someone remembers to list it, which for a vault is exactly
-  // the wrong direction to be wrong in. Anything not named here is masked.
-  // Note `url` is absent deliberately — a connection_string URL carries its own password.
-  const PUBLIC = new Set([
-    'host', 'port', 'database', 'user', 'username', 'scopes', 'expires_at', 'fingerprint',
-    'brand', 'cardholder', 'expiry', 'bank', 'holder', 'issuer', 'account',
-    'digits', 'period', 'algorithm',
-  ]);
+  // PUBLIC_FIELDS is an allowlist and lives with the schemas, so the form that collects
+  // a field and the masking that hides it cannot disagree about which ones are secret.
   return Object.fromEntries(
     Object.entries(payload as Record<string, unknown>).map(([k, v]) => [
       k,
-      !PUBLIC.has(k) && typeof v === 'string' ? maskValue(v) : v,
+      !PUBLIC_FIELDS.has(k) && typeof v === 'string' ? maskValue(v) : v,
     ]),
   ) as Payload;
 }

@@ -235,7 +235,16 @@ function renderUnlock() {
 
 // --------------------------------------------------------------------- list
 
+/** Field shapes per type, from /api/schema. Empty list = free text (env_bundle). */
+let SCHEMA = {};
+
+async function loadSchema() {
+  if (Object.keys(SCHEMA).length) return;
+  try { SCHEMA = (await api('GET', '/api/schema')).types || {}; } catch { /* forms fall back to text */ }
+}
+
 async function load() {
+  await loadSchema();
   const q = $('#q').value.trim();
   try {
     items = q ? await api('GET', '/api/search', { query: { q, limit: 50 } })
@@ -385,38 +394,143 @@ async function renderVersions(name) {
   );
 }
 
+/**
+ * An open map of keys — `env_bundle`. Rows rather than text, so nobody types JSON and
+ * nothing has to survive a .env round-trip: the rows are sent as an object, which means
+ * a value containing newlines just works.
+ */
+function recordEditor(type) {
+  const rows = el('div', {});
+  const addRow = (k = '', v = '') => {
+    const row = el('div', { className: 'row', style: 'align-items:start; margin-bottom:6px' }, [
+      el('input', { value: k, placeholder: 'KEY', style: 'flex:0 0 34%' }),
+      el('textarea', { value: v, placeholder: 'value', rows: 1, style: 'flex:1' }),
+    ]);
+    row.append(btn('remove', () => row.remove()));
+    rows.append(row);
+  };
+
+  // Filling rows from a paste is a convenience, not the storage path — what gets saved is
+  // whatever the rows say afterwards, in front of the user. That is why this splitter can
+  // live here without being the drift risk that a second *parser* would be.
+  const paste = el('textarea', { placeholder: 'optional: paste .env text or a JSON object, then press Fill rows' });
+  const fillFromPaste = () => {
+    const raw = paste.value.trim();
+    if (!raw) return;
+    let pairs;
+    if (raw.startsWith('{')) {
+      try { pairs = Object.entries(JSON.parse(raw)); }
+      catch { return banner('that paste is not valid JSON', 'bad'); }
+    } else {
+      pairs = raw.split(/\r?\n/).map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#') && l.indexOf('=') > 0)
+        .map((l) => [l.slice(0, l.indexOf('=')).replace(/^export\s+/, '').trim(), l.slice(l.indexOf('=') + 1).trim()]);
+    }
+    rows.replaceChildren();
+    for (const [k, v] of pairs) addRow(k, String(v));
+    if (!rows.children.length) addRow();
+    paste.value = '';
+  };
+
+  return {
+    node: el('div', {}, [
+      el('label', { textContent: `value (${type}) — one row per key` }),
+      rows,
+      el('div', { className: 'row', style: 'margin-bottom:10px' }, [
+        btn('Add key', () => addRow()),
+        btn('Fill rows', fillFromPaste),
+      ]),
+      paste,
+    ]),
+    read: () => {
+      const out = {};
+      for (const row of rows.children) {
+        const [key, val] = row.querySelectorAll('input, textarea');
+        if (key.value.trim()) out[key.value.trim()] = val.value;
+      }
+      return out;
+    },
+    fill: (v) => {
+      rows.replaceChildren();
+      for (const [k, x] of Object.entries(v || {})) addRow(k, String(x));
+      if (!rows.children.length) addRow();
+    },
+    init: () => addRow(),
+  };
+}
+
+/**
+ * An editor for one payload. Types with a known shape get a labelled input per field —
+ * nobody should have to hand-write JSON to store a password. `env_bundle` has no fixed
+ * fields, so it keeps a free-text box and the server parses it.
+ */
+function fieldEditor(type, initial) {
+  const specs = SCHEMA[type] || [];
+
+  if (!specs.length) {
+    const ed = recordEditor(type);
+    if (initial) ed.fill(initial); else ed.init();
+    return ed;
+  }
+
+  const inputs = {};
+  const rows = specs.map((f) => {
+    const input = el(f.multiline ? 'textarea' : 'input', {
+      value: initial?.[f.name] ?? '',
+      placeholder: f.required ? 'required' : 'optional',
+    });
+    inputs[f.name] = f;
+    f.node = input;
+    return el('div', { className: 'field' }, [
+      el('label', { textContent: f.required ? `${f.name} *` : f.name }),
+      input,
+    ]);
+  });
+
+  return {
+    node: el('div', {}, rows),
+    read: () => {
+      const out = {};
+      for (const f of specs) {
+        const raw = String(f.node.value).trim();
+        if (raw === '') continue;            // omitted, not stored as an empty string
+        out[f.name] = f.numeric ? Number(raw) : raw;
+      }
+      return out;
+    },
+    fill: (v) => { for (const f of specs) f.node.value = v?.[f.name] ?? ''; },
+  };
+}
+
 function renderNewValue(rec) {
-  const ta = el('textarea', { placeholder: valuePlaceholder(rec.type) });
+  const editor = fieldEditor(rec.type);
   const note = el('input', { placeholder: 'Why? e.g. "rotated after leak"' });
 
-  // A save REPLACES the whole payload — it does not merge. Adding a totp to a login by
-  // typing only the totp would therefore drop the username and password. Loading the
-  // current value first is the difference between editing and overwriting, so it is a
-  // button rather than something you have to know. It is a deliberate plaintext read,
-  // audited like any other, which is why it is not done automatically on open.
-  const load = btn('Load current value', async () => {
+  // A save REPLACES the whole payload — it does not merge. Filling in only the field you
+  // came to change would drop the rest, so loading the current one first is the
+  // difference between editing and overwriting. It is a button rather than automatic
+  // because it is a real plaintext read, audited like any other.
+  const loadCurrent = btn('Load current value', async () => {
     try {
       const full = await api('GET', '/api/secret', { query: { name: rec.name } });
-      ta.value = fmtValue(full.type, full.value);
-      load.disabled = true;
-      load.textContent = 'Loaded';
+      editor.fill(full.value);
+      loadCurrent.disabled = true;
+      loadCurrent.textContent = 'Loaded';
     } catch (e) { banner(e.message, 'bad'); }
   });
 
   $('#detail').replaceChildren(
-    el('div', { className: 'field' }, [
-      el('label', { textContent: `new value (${rec.type}) — replaces the whole payload` }),
-      ta,
-    ]),
+    el('p', { className: 'note', textContent: `New version of ${rec.name} — this replaces the whole value, it does not merge.` }),
+    editor.node,
     el('div', { className: 'field' }, [el('label', { textContent: 'note' }), note]),
     el('div', { className: 'row' }, [
       btn('Save new version', async () => {
         try {
-          await api('PUT', '/api/secret', { query: { name: rec.name }, body: { value: parseValue(rec.type, ta.value), note: note.value } });
+          await api('PUT', '/api/secret', { query: { name: rec.name }, body: { value: editor.read(), note: note.value } });
           showDetail(rec.name);
         } catch (e) { banner(e.message, 'bad'); }
       }, 'primary'),
-      load,
+      loadCurrent,
       btn('Cancel', () => showDetail(rec.name)),
     ]),
   );
@@ -427,7 +541,6 @@ function renderForm(rec) {
   const f = {
     name: el('input', { value: rec?.name || '', placeholder: 'stripe/test/sk', disabled: !isNew }),
     type: el('select', {}, TYPES.map((t) => el('option', { value: t, textContent: t, selected: rec?.type === t }))),
-    value: el('textarea', { placeholder: valuePlaceholder(rec?.type || 'api_key') }),
     description: el('input', { value: rec?.description || '', placeholder: 'Stripe test mode secret key' }),
     service: el('input', { value: rec?.service || '', placeholder: 'stripe' }),
     env: el('input', { value: rec?.env || '', placeholder: 'test' }),
@@ -436,13 +549,20 @@ function renderForm(rec) {
     url: el('input', { value: rec?.url || '', placeholder: 'https://dashboard.stripe.com' }),
   };
   f.type.disabled = !isNew;
-  f.type.onchange = () => (f.value.placeholder = valuePlaceholder(f.type.value));
+
+  // The value fields belong to the chosen type, so they are re-rendered when it changes.
+  let editor = fieldEditor(f.type.value);
+  const valueSlot = el('div', {}, [editor.node]);
+  f.type.onchange = () => {
+    editor = fieldEditor(f.type.value);
+    valueSlot.replaceChildren(editor.node);
+  };
 
   const field = (label, node) => el('div', { className: 'field' }, [el('label', { textContent: label }), node]);
   const parts = [
     field('name', f.name),
     el('div', { className: 'row' }, [field('type', f.type), field('service', f.service), field('env', f.env)]),
-    ...(isNew ? [field('value', f.value)] : []),
+    ...(isNew ? [valueSlot] : []),
     field('description', f.description),
     el('div', { className: 'row' }, [field('tags (comma separated)', f.tags), field('aliases (comma separated)', f.aliases)]),
     field('url', f.url),
@@ -457,7 +577,7 @@ function renderForm(rec) {
     try {
       if (isNew) {
         await api('POST', '/api/secret', {
-          body: { name: f.name.value.trim(), type: f.type.value, value: parseValue(f.type.value, f.value.value), ...meta },
+          body: { name: f.name.value.trim(), type: f.type.value, value: editor.read(), ...meta },
         });
         $('#q').value = ''; await load(); showDetail(f.name.value.trim());
       } else {
