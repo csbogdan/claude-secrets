@@ -93,6 +93,15 @@ secrets gen --length 32 --symbols
 
 `gen` stores nothing and never touches the vault — pipe it into `secrets set` yourself.
 
+Secrets tagged `hidden` are left out of the web UI's list until you press **Show hidden**,
+and every secret has a **Hide** button. It is a screen-sharing courtesy, not access
+control — hidden secrets are still in the API, still in search, still readable over MCP
+and the CLI. The toggle lives in `sessionStorage`, so a new tab starts hidden again.
+
+```sh
+secrets edit personal/thing --tags hidden      # same thing from the CLI
+```
+
 Web UI at `http://localhost:7777/` — full CRUD, version history, and the live feed.
 It asks once for your vault password, and keeps it only for the life of the tab.
 
@@ -218,5 +227,6 @@ one audit log, one source of truth.
 ```sh
 npm run build      # tsc + copy UI assets
 npm test           # build, then 45 vault tests
+npm run test:ui    # drives the real UI in headless Chromium against a throwaway vault
 npm run typecheck
 ```

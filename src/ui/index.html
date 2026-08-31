@@ -105,6 +105,7 @@
   <span class="pill" id="status">connecting…</span>
   <span class="spacer"></span>
   <button id="btn-new">+ New</button>
+  <button id="btn-hidden">Show hidden</button>
   <button id="btn-lock">Lock</button>
   <button id="btn-backup">Backup</button>
   <button id="btn-token">Password</button>
@@ -147,6 +148,16 @@ const el = (t, props = {}, kids = []) => {
 };
 
 let token = sessionStorage.getItem('secretd_password') || '';
+
+/**
+ * Secrets tagged `hidden` are kept out of the list until this is switched on. It is a
+ * screen-sharing courtesy, not access control — the value is still in the API, still in
+ * search, still readable over MCP. Deliberately in sessionStorage, so a new tab starts
+ * with them hidden again rather than remembering that you once revealed them.
+ */
+const HIDDEN_TAG = 'hidden';
+let showHidden = sessionStorage.getItem('secretd_show_hidden') === '1';
+const isHidden = (rec) => (rec?.tags || []).includes(HIDDEN_TAG);
 let selected = null;
 let items = [];
 
@@ -250,6 +261,7 @@ async function load() {
     items = q ? await api('GET', '/api/search', { query: { q, limit: 50 } })
               : await api('GET', '/api/secrets');
     items = items.items || items;
+    if (!showHidden) items = items.filter((i) => !isHidden(i));
   } catch (e) {
     if (e.status === 401) { if (requireToken(true)) return load(); }
     if (e.status === 423) { renderUnlock(); }
@@ -334,6 +346,16 @@ async function showDetail(name) {
     ]),
     metaTable(rec),
     el('div', { className: 'row', style: 'margin-top:12px' }, [
+      btn(isHidden(rec) ? 'Unhide' : 'Hide', async () => {
+        const tags = (rec.tags || []).filter((t) => t !== HIDDEN_TAG);
+        if (!isHidden(rec)) tags.push(HIDDEN_TAG);
+        try {
+          await api('PATCH', '/api/secret', { query: { name }, body: { tags } });
+          await load();
+          if (isHidden(rec) || showHidden) showDetail(name);
+          else { selected = null; $('#detail').replaceChildren(el('p', { className: 'empty', textContent: 'Hidden. Use "Show hidden" to bring it back.' })); $('#detail-title').textContent = 'Detail'; }
+        } catch (e) { banner(e.message, 'bad'); }
+      }),
       btn('Edit metadata', () => renderForm(rec)),
       btn('New value', () => renderNewValue(rec)),
       btn('Versions', () => renderVersions(name)),
@@ -473,18 +495,16 @@ function fieldEditor(type, initial) {
     return ed;
   }
 
-  const inputs = {};
+  // SCHEMA[type] is shared, so the nodes live in a map here rather than on the specs —
+  // stashing them on the spec objects would leave a second editor reading detached inputs.
+  const nodes = new Map();
   const rows = specs.map((f) => {
     const input = el(f.multiline ? 'textarea' : 'input', {
       value: initial?.[f.name] ?? '',
       placeholder: f.required ? 'required' : 'optional',
     });
-    inputs[f.name] = f;
-    f.node = input;
-    return el('div', { className: 'field' }, [
-      el('label', { textContent: f.required ? `${f.name} *` : f.name }),
-      input,
-    ]);
+    nodes.set(f.name, input);
+    return labelled(f.required ? `${f.name} *` : f.name, input);
   });
 
   return {
@@ -492,13 +512,13 @@ function fieldEditor(type, initial) {
     read: () => {
       const out = {};
       for (const f of specs) {
-        const raw = String(f.node.value).trim();
+        const raw = String(nodes.get(f.name).value).trim();
         if (raw === '') continue;            // omitted, not stored as an empty string
         out[f.name] = f.numeric ? Number(raw) : raw;
       }
       return out;
     },
-    fill: (v) => { for (const f of specs) f.node.value = v?.[f.name] ?? ''; },
+    fill: (v) => { for (const f of specs) nodes.get(f.name).value = v?.[f.name] ?? ''; },
   };
 }
 
@@ -522,7 +542,7 @@ function renderNewValue(rec) {
   $('#detail').replaceChildren(
     el('p', { className: 'note', textContent: `New version of ${rec.name} — this replaces the whole value, it does not merge.` }),
     editor.node,
-    el('div', { className: 'field' }, [el('label', { textContent: 'note' }), note]),
+    labelled('note', note),
     el('div', { className: 'row' }, [
       btn('Save new version', async () => {
         try {
@@ -558,7 +578,7 @@ function renderForm(rec) {
     valueSlot.replaceChildren(editor.node);
   };
 
-  const field = (label, node) => el('div', { className: 'field' }, [el('label', { textContent: label }), node]);
+  const field = labelled;
   const parts = [
     field('name', f.name),
     el('div', { className: 'row' }, [field('type', f.type), field('service', f.service), field('env', f.env)]),
@@ -608,6 +628,13 @@ function btn(text, onclick, cls = '') {
   return b;
 }
 const splitList = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+
+let uid = 0;
+/** A label tied to its input with for/id. Assistive tech needs it; so does any test. */
+function labelled(text, node) {
+  node.id = node.id || `f${++uid}`;
+  return el('div', { className: 'field' }, [el('label', { textContent: text, htmlFor: node.id }), node]);
+}
 
 function valuePlaceholder(type) {
   return {
@@ -666,6 +693,14 @@ async function streamFeed() {
 }
 
 // --------------------------------------------------------------------- init
+
+$('#btn-hidden').textContent = showHidden ? 'Showing hidden' : 'Show hidden';
+$('#btn-hidden').onclick = async () => {
+  showHidden = !showHidden;
+  sessionStorage.setItem('secretd_show_hidden', showHidden ? '1' : '0');
+  $('#btn-hidden').textContent = showHidden ? 'Showing hidden' : 'Show hidden';
+  await load();
+};
 
 $('#btn-new').onclick = () => renderForm(null);
 $('#btn-token').onclick = () => { if (requireToken(true)) { load(); refreshStatus(); } };
