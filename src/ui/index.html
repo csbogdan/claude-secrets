@@ -388,8 +388,26 @@ async function renderVersions(name) {
 function renderNewValue(rec) {
   const ta = el('textarea', { placeholder: valuePlaceholder(rec.type) });
   const note = el('input', { placeholder: 'Why? e.g. "rotated after leak"' });
+
+  // A save REPLACES the whole payload — it does not merge. Adding a totp to a login by
+  // typing only the totp would therefore drop the username and password. Loading the
+  // current value first is the difference between editing and overwriting, so it is a
+  // button rather than something you have to know. It is a deliberate plaintext read,
+  // audited like any other, which is why it is not done automatically on open.
+  const load = btn('Load current value', async () => {
+    try {
+      const full = await api('GET', '/api/secret', { query: { name: rec.name } });
+      ta.value = fmtValue(full.type, full.value);
+      load.disabled = true;
+      load.textContent = 'Loaded';
+    } catch (e) { banner(e.message, 'bad'); }
+  });
+
   $('#detail').replaceChildren(
-    el('div', { className: 'field' }, [el('label', { textContent: `new value (${rec.type})` }), ta]),
+    el('div', { className: 'field' }, [
+      el('label', { textContent: `new value (${rec.type}) — replaces the whole payload` }),
+      ta,
+    ]),
     el('div', { className: 'field' }, [el('label', { textContent: 'note' }), note]),
     el('div', { className: 'row' }, [
       btn('Save new version', async () => {
@@ -398,6 +416,7 @@ function renderNewValue(rec) {
           showDetail(rec.name);
         } catch (e) { banner(e.message, 'bad'); }
       }, 'primary'),
+      load,
       btn('Cancel', () => showDetail(rec.name)),
     ]),
   );
