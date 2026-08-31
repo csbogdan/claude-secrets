@@ -158,11 +158,13 @@ describe('web UI', () => {
     // Still fully readable over the API — a screen-sharing courtesy, not access control.
     assert.equal((await stored('site/login')).username, 'me@example.com');
 
-    await page.getByRole('button', { name: 'Show hidden' }).click();
+    await page.getByRole('button', { name: 'Hidden: off' }).click();
     await inList.waitFor({ timeout: 5000 });
+    // Turning it on must visibly change something, or it looks like the click did nothing.
+    await page.locator('#list').getByText('hidden', { exact: true }).waitFor({ timeout: 5000 });
     await inList.click();
     await page.getByRole('button', { name: 'Unhide' }).click();
-    await page.getByRole('button', { name: 'Showing hidden' }).click();
+    await page.getByRole('button', { name: 'Hidden: on' }).click();
     await inList.waitFor({ timeout: 5000 });
   });
 
@@ -185,13 +187,39 @@ describe('web UI', () => {
     );
 
     // And the checkbox is the control both ways: unticking it in Edit metadata brings it back.
-    await page.getByRole('button', { name: 'Show hidden' }).click();
+    await page.getByRole('button', { name: 'Hidden: off' }).click();
     await inList.click();
     await page.getByRole('button', { name: 'Edit metadata' }).click();
     await page.getByLabel('hidden').uncheck();
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await page.getByRole('button', { name: 'Showing hidden' }).click();
+    await page.getByRole('button', { name: 'Hidden: on' }).click();
     await inList.waitFor({ timeout: 5000 });
+  });
+
+  test('a name with a space is normalised, and says so before it is saved', async () => {
+    await page.getByRole('button', { name: '+ New' }).click();
+    await page.getByLabel('name', { exact: true }).fill('my photo site');
+    await page.selectOption('select', 'login');
+
+    // The point: you learn what it becomes while typing, not after filling the whole form.
+    await page.getByText('will be saved as my-photo-site').waitFor({ timeout: 5000 });
+
+    await page.getByLabel('username').fill('someone@example.com');
+    await page.getByLabel('password', { exact: true }).fill('placeholder-not-real');
+    await page.getByRole('button', { name: 'Create' }).click();
+    await page.waitForFunction(
+      "document.querySelector('#detail-title').textContent === 'my-photo-site'",
+      undefined,
+      { timeout: 5000 },
+    );
+    assert.equal((await stored('my-photo-site')).username, 'someone@example.com');
+  });
+
+  test('the value block is headed, so a payload url is not confused with the metadata url', async () => {
+    await page.getByRole('button', { name: '+ New' }).click();
+    await page.selectOption('select', 'login');
+    await page.getByText('value (login)').waitFor({ timeout: 5000 });
+    assert.equal(await page.getByLabel('url').count(), 2, 'both urls exist, but now separated');
   });
 
   test('a required field the form left empty is refused by the server, not stored half-made', async () => {

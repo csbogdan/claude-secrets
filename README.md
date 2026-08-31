@@ -1,6 +1,6 @@
 # claude_secrets
 
-A single-user secrets service for a Mac mini. Encrypted SQLite vault behind an HTTP
+**v0.2.0** — a single-user secrets service for a Mac mini. Encrypted SQLite vault behind an HTTP
 daemon, with three clients on top: a **CLI**, a **web UI**, and an **MCP server** so
 Claude Code can find and use credentials by name.
 
@@ -58,9 +58,9 @@ secrets ls
 secrets logs -f                         # live activity feed
 ```
 
-Ten types. Beyond keys and tokens there are the 1Password-shaped ones — `login`,
-`card`, `bank_account`, `identity` — which have several fields and no single value, so
-they take JSON:
+Ten types: `api_key`, `oauth`, `key_file`, `connection_string`, `env_bundle`, `note`,
+`login`, `card`, `bank_account`, `identity`. The last four have several fields and no
+single value, so from the CLI they take JSON (the web UI gives them a real form):
 
 ```sh
 secrets set atlassian/jira --type login --desc "Jira basic auth" \
@@ -93,7 +93,8 @@ secrets gen --length 32 --symbols
 
 `gen` stores nothing and never touches the vault — pipe it into `secrets set` yourself.
 
-Secrets tagged `hidden` are left out of the web UI's list until you press **Show hidden**.
+Secrets tagged `hidden` are left out of the web UI's list until the header toggle reads
+**Hidden: on** (it starts off in every new tab).
 There is a **hidden** checkbox on the new-secret and edit-metadata forms, and a
 **Hide**/**Unhide** button on every secret. It is a screen-sharing courtesy, not access
 control — hidden secrets are still in the API, still in search, still readable over MCP
@@ -228,6 +229,29 @@ one audit log, one source of truth.
 ```sh
 npm run build      # tsc + copy UI assets
 npm test           # build, then 45 vault tests
-npm run test:ui    # drives the real UI in headless Chromium against a throwaway vault
+npm run test:ui    # 9 tests driving the real UI in headless Chromium
 npm run typecheck
 ```
+
+`test:ui` starts a throwaway vault in a temp dir on its own port, drives Playwright
+through the real forms, and asserts against the API what the form actually stored. It
+never touches `~/.secretd`. Any uncaught exception in the page fails the run, so a broken
+render cannot pass quietly.
+
+## Changes in 0.2.0
+
+- Four types for credentials a person has rather than a machine: `login`, `card`,
+  `bank_account`, `identity`.
+- TOTP codes (RFC 6238) from a `totp` field holding either a base32 seed or a whole
+  `otpauth://` URI. `secrets totp`, MCP `get_totp`, a UI button, and a `:totp` inject mode
+  for `secrets exec`. Codes leave the vault; seeds never do.
+- Password generation: `secrets gen`, MCP `generate_password`.
+- Read any version without restoring it: `secrets get --version N`, `?version=` on the
+  API, MCP, and a View button beside every version.
+- The web UI builds a real form per type from the schemas, and `env_bundle` gets a
+  key/value row editor. No more hand-written JSON.
+- `hidden` tag keeps a secret out of the UI list.
+- Two payload round-trip bugs fixed: the UI re-wrapped its own rendered JSON as the value,
+  and a bundle pasted as JSON was shredded by the `.env` parser. Both silently overwrote
+  working credentials; both now fail loudly instead.
+- Masking is an allowlist, so a field added later is hidden until someone says otherwise.

@@ -48,7 +48,7 @@ async function guard(fn: () => Promise<unknown>): Promise<ToolResult> {
 }
 
 const server = new McpServer(
-  { name: 'secrets', version: '0.1.0' },
+  { name: 'secrets', version: '0.2.0' },
   {
     instructions: [
       'This server is the operator\'s personal secrets vault.',

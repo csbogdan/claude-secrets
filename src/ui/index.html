@@ -65,14 +65,24 @@
   .item:last-child { border-bottom: 0; }
   .item:hover { background: var(--code); }
   .item.sel { background: var(--code); box-shadow: inset 3px 0 0 var(--accent); }
-  .item .n { font-weight: 600; font-size: 13px; }
-  .item .d { color: var(--dim); font-size: 12px; margin-top: 1px; }
+  /* The name wraps rather than clipping: these are hierarchical, so the segment that
+     distinguishes siblings is the last one, and an ellipsis would eat exactly that. */
+  .item .n { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+  .item .d {
+    color: var(--dim); font-size: 12px; margin-top: 1px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .item .n .tag { margin: 0 0 0 6px; vertical-align: 1px; }
   .tag {
     display: inline-block; font-size: 11px; padding: 0 6px; margin: 2px 3px 0 0;
     border: 1px solid var(--border); border-radius: 4px; color: var(--dim);
   }
   .field { margin-bottom: 11px; }
   .field label { display: block; font-size: 12px; color: var(--dim); margin-bottom: 3px; }
+  label.section {
+    display: block; font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--dim); margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid var(--border);
+  }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .row > * { flex: 1; min-width: 120px; }
   pre.val {
@@ -105,7 +115,7 @@
   <span class="pill" id="status">connecting…</span>
   <span class="spacer"></span>
   <button id="btn-new">+ New</button>
-  <button id="btn-hidden">Show hidden</button>
+  <button id="btn-hidden">Hidden: off</button>
   <button id="btn-lock">Lock</button>
   <button id="btn-backup">Backup</button>
   <button id="btn-token">Password</button>
@@ -276,10 +286,15 @@ async function load() {
     return;
   }
   for (const it of items) {
+    // Two clipped lines each. Descriptions here run to paragraphs and some secrets have
+    // six aliases; rendered in full they made a nineteen-item list unscannable. Both are
+    // still searched, and the detail pane still shows them whole.
+    const nameRow = el('div', { className: 'n mono', textContent: it.name, title: it.name });
+    if (isHidden(it)) nameRow.append(el('span', { className: 'tag', textContent: 'hidden' }));
+    const meta = [it.type, it.env, it.description].filter(Boolean).join(' · ');
     const node = el('div', { className: 'item' + (selected === it.name ? ' sel' : '') }, [
-      el('div', { className: 'n mono', textContent: it.name }),
-      el('div', { className: 'd', textContent: [it.type, it.env, it.description].filter(Boolean).join(' · ') }),
-      ...(it.aliases?.length ? [el('div', {}, it.aliases.map((a) => el('span', { className: 'tag', textContent: a })))] : []),
+      nameRow,
+      el('div', { className: 'd', textContent: meta, title: meta }),
     ]);
     node.onclick = () => showDetail(it.name);
     list.append(node);
@@ -498,6 +513,10 @@ function fieldEditor(type, initial) {
   // SCHEMA[type] is shared, so the nodes live in a map here rather than on the specs —
   // stashing them on the spec objects would leave a second editor reading detached inputs.
   const nodes = new Map();
+  // A heading, because several types have a field that also exists as metadata — `url`
+  // on a login is the site you log into, `url` at the bottom of the form is a reference
+  // link. Without a divider they read as the same field twice.
+  const heading = el('label', { className: 'section', textContent: `value (${type})` });
   const rows = specs.map((f) => {
     const input = el(f.multiline ? 'textarea' : 'input', {
       value: initial?.[f.name] ?? '',
@@ -508,7 +527,7 @@ function fieldEditor(type, initial) {
   });
 
   return {
-    node: el('div', {}, rows),
+    node: el('div', {}, [heading, ...rows]),
     read: () => {
       const out = {};
       for (const f of specs) {
@@ -580,8 +599,17 @@ function renderForm(rec) {
   };
 
   const field = labelled;
+  const nameHint = el('p', { className: 'note' });
+  const nameField = field('name', f.name);
+  nameField.append(nameHint);
+  f.name.oninput = () => {
+    const clean = normaliseName(f.name.value);
+    nameHint.textContent =
+      clean && clean !== f.name.value.trim() ? `will be saved as ${clean}` : '';
+  };
+
   const parts = [
-    field('name', f.name),
+    nameField,
     el('div', { className: 'row' }, [field('type', f.type), field('service', f.service), field('env', f.env)]),
     ...(isNew ? [valueSlot] : []),
     field('description', f.description),
@@ -603,9 +631,9 @@ function renderForm(rec) {
     try {
       if (isNew) {
         await api('POST', '/api/secret', {
-          body: { name: f.name.value.trim(), type: f.type.value, value: editor.read(), ...meta },
+          body: { name: normaliseName(f.name.value), type: f.type.value, value: editor.read(), ...meta },
         });
-        $('#q').value = ''; await load(); showDetail(f.name.value.trim());
+        $('#q').value = ''; await load(); showDetail(normaliseName(f.name.value));
       } else {
         await api('PATCH', '/api/secret', { query: { name: rec.name }, body: meta });
         showDetail(rec.name);
@@ -634,6 +662,19 @@ function btn(text, onclick, cls = '') {
   return b;
 }
 const splitList = (s) => s.split(',').map((x) => x.trim()).filter(Boolean);
+
+/**
+ * Names go into URLs, CLI arguments and `{{placeholder}}` substitutions, so the vault
+ * only accepts a restricted set. Rather than rejecting "my photo site" after the whole form
+ * is filled in, show what it will actually be saved as while it is being typed.
+ */
+function normaliseName(raw) {
+  return raw
+    .trim()
+    .replace(/[^A-Za-z0-9._\-/]+/g, '-')
+    .replace(/^[^A-Za-z0-9]+/, '')
+    .slice(0, 128);
+}
 
 let uid = 0;
 /** A label tied to its input with for/id. Assistive tech needs it; so does any test. */
@@ -700,11 +741,16 @@ async function streamFeed() {
 
 // --------------------------------------------------------------------- init
 
-$('#btn-hidden').textContent = showHidden ? 'Showing hidden' : 'Show hidden';
+const syncHiddenBtn = () => {
+  const b = $('#btn-hidden');
+  b.textContent = showHidden ? 'Hidden: on' : 'Hidden: off';
+  b.className = showHidden ? 'primary' : '';
+};
+syncHiddenBtn();
 $('#btn-hidden').onclick = async () => {
   showHidden = !showHidden;
   sessionStorage.setItem('secretd_show_hidden', showHidden ? '1' : '0');
-  $('#btn-hidden').textContent = showHidden ? 'Showing hidden' : 'Show hidden';
+  syncHiddenBtn();
   await load();
 };
 
