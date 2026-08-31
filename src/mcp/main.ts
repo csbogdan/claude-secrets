@@ -158,6 +158,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  'get_totp',
+  {
+    title: 'Get a 2FA code',
+    description:
+      'Generate the current TOTP (2FA) code for a secret that has a totp seed — typically a login. Returns the six-digit code and the seconds it stays valid, never the seed itself, so this is safe to call when a site asks for a second factor.',
+    inputSchema: {
+      name: z.string().describe('Exact name or alias, ideally one returned by search_secrets'),
+    },
+  },
+  async ({ name }) => guard(() => api.totp(name)),
+);
+
+server.registerTool(
   'create_secret',
   {
     title: 'Create secret',

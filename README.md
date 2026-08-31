@@ -58,6 +58,21 @@ secrets ls
 secrets logs -f                         # live activity feed
 ```
 
+Ten types. Beyond keys and tokens there are the 1Password-shaped ones — `login`,
+`card`, `bank_account`, `identity` — which have several fields and no single value, so
+they take JSON:
+
+```sh
+secrets set atlassian/jira --type login --desc "Jira basic auth" \
+  '{"username":"me@corp.com","password":"ATATT…","url":"https://corp.atlassian.net"}'
+
+secrets totp atlassian/jira             # current 2FA code, if it has a totp seed
+```
+
+A `totp` field takes a bare base32 seed *or* the whole `otpauth://` URI from the QR code —
+that URI already carries digits, period and algorithm. Codes are generated on demand and
+the seed itself never leaves the vault.
+
 Run something without the value ever touching your terminal or Claude's context:
 
 ```sh
@@ -143,9 +158,12 @@ claude mcp add secrets --scope user \
 No credential in that registration — the MCP server reads the vault password from your
 login Keychain when it needs it, so changing the password never breaks it.
 
-Eleven tools: `search_secrets`, `list_secrets`, `get_secret`, `create_secret`,
+Twelve tools: `search_secrets`, `list_secrets`, `get_secret`, `get_totp`, `create_secret`,
 `update_secret`, `update_secret_metadata`, `delete_secret`, `list_versions`,
 `rollback_secret`, `run_with_secrets`, `vault_status`.
+
+`get_totp` returns a code, not a seed — an agent can complete a 2FA prompt without the
+transcript ever containing something that generates codes forever.
 
 The `secret-vault` skill teaches the workflow that makes this reliable: **search before
 you get**, ask when a search is ambiguous rather than picking, and prefer
@@ -186,6 +204,6 @@ one audit log, one source of truth.
 
 ```sh
 npm run build      # tsc + copy UI assets
-npm test           # build, then 33 vault tests
+npm test           # build, then 41 vault tests
 npm run typecheck
 ```

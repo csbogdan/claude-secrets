@@ -34,6 +34,7 @@ ${c.bold('Read')}
   secrets ls [--type T] [--tag T] [--service S] [--env E]
   secrets search <query...>          natural-language lookup over metadata
   secrets get <name> [--json] [--mask] [--field F] [--version N]
+  secrets totp <name>                current 2FA code for a secret with a totp seed
   secrets versions <name>
   secrets audit [--secret N] [--action A] [--limit N]
   secrets logs [-f]                  live activity feed
@@ -149,6 +150,8 @@ async function main(): Promise<number> {
       return cmdEdit(api, must(positionals[0], 'edit <name>'), v);
     case 'rm':
       return cmdRemove(api, must(positionals[0], 'rm <name>'));
+    case 'totp':
+      return cmdTotp(api, must(positionals[0], 'totp <name>'), v);
     case 'versions':
       return cmdVersions(api, must(positionals[0], 'versions <name>'));
     case 'rollback':
@@ -402,6 +405,22 @@ async function cmdSet(
       c.dim('  tip: add --desc and --aliases so natural-language search can find this later\n'),
     );
   }
+  return 0;
+}
+
+async function cmdTotp(
+  api: SecretdClient,
+  name: string,
+  v: Record<string, unknown>,
+): Promise<number> {
+  const { code, expires_in } = await api.totp(name);
+  if (v['json']) {
+    process.stdout.write(`${JSON.stringify({ name, code, expires_in }, null, 2)}\n`);
+    return 0;
+  }
+  // Code alone on stdout so it pipes; its lifetime goes to stderr.
+  process.stdout.write(`${code}\n`);
+  process.stderr.write(c.dim(`valid ${expires_in}s\n`));
   return 0;
 }
 

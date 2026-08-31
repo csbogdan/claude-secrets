@@ -19,7 +19,14 @@ const PRIMARY = {
   key_file: 'pem',
   oauth: 'access_token',
   env_bundle: null,
+  login: 'password',
+  card: 'number',
+  bank_account: null,
+  identity: null,
 };
+
+/** Several fields, no scalar form — the only text form these have is JSON. */
+const OBJECT_ONLY = new Set(['login', 'card', 'bank_account', 'identity']);
 
 export function fmtValue(type, v) {
   if (v === null || v === undefined) return '';
@@ -42,6 +49,8 @@ export function fmtValue(type, v) {
 export function parseValue(type, raw) {
   const s = raw.trim();
   if (type === 'env_bundle') return s; // the server's parseDotenv owns this form
+  // Hand a non-object straight through: the server owns the error message for it.
+  if (OBJECT_ONLY.has(type)) { try { return JSON.parse(s); } catch { return s; } }
   const obj = jsonPayload(type, s);
   if (obj) return obj;
   return type === 'oauth' ? { access_token: s } : s;
@@ -99,6 +108,10 @@ if (typeof process !== 'undefined' && process.argv?.[1]?.endsWith('payload.js'))
     ['env_bundle', { API_KEY: 'abc', DATABASE_URL: 'postgres://x' }],
     // A multi-line value cannot survive as .env text, so it must be shown as JSON.
     ['env_bundle', { PROJECT: 'acme', CREDS: '-----BEGIN KEY-----\nabc\n-----END-----' }],
+    ['login', { username: 'me@x.com', password: 'hunter2', totp: 'JBSWY3DPEHPK3PXP' }],
+    ['card', { number: '4111111111111111', expiry: '12/29', cvv: '123' }],
+    ['bank_account', { iban: 'DE89370400440532013000', holder: 'B C' }],
+    ['identity', { full_name: 'B C', passport: 'X1234567' }],
   ];
 
   for (const [type, payload] of cases) {

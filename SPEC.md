@@ -55,7 +55,8 @@ CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE secrets(
   id INTEGER PRIMARY KEY,
   name TEXT UNIQUE NOT NULL,        -- 'github/pat', 'stripe/test/sk'
-  type TEXT NOT NULL,               -- api_key|oauth|key_file|connection_string|env_bundle|note
+  type TEXT NOT NULL,               -- api_key|oauth|key_file|connection_string|env_bundle
+                                    -- |note|login|card|bank_account|identity
   description TEXT,
   service TEXT,                     -- 'github', 'stripe'
   env TEXT,                         -- 'prod', 'dev', null
@@ -115,11 +116,25 @@ The encrypted blob is JSON. The `type` field determines its shape.
 | `connection_string` | `{ url, host?, port?, user?, password?, database? }` |
 | `env_bundle` | `{ KEY: value, ... }` |
 | `note` | `{ text }` — catch-all for anything that doesn't fit |
+| `login` | `{ username, password?, totp?, url?, notes? }` — needs a password or a totp |
+| `card` | `{ number, expiry, cvv?, cardholder?, brand?, pin?, postcode?, notes? }` |
+| `bank_account` | `{ holder?, bank?, iban?, account_number?, routing_number?, bic?, notes? }` |
+| `identity` | `{ full_name?, dob?, email?, phone?, address?, national_id?, passport?, license? }` |
 
 `oauth` is the only type with behavior: on read, if `expires_at` is within 60s, the daemon
 POSTs the refresh grant to `token_url`, writes a new version, and returns the fresh token.
 Refresh failures return the stale token plus a `stale: true` flag rather than erroring —
 a broken refresh shouldn't be a hard outage.
+
+`login` is the second type with behavior: a `totp` field holds either a bare base32 seed or
+the whole `otpauth://` URI an authenticator shows behind its QR code — the URI already
+carries digits/period/algorithm, so no parallel fields exist to drift out of sync with it.
+`GET /api/totp` returns a generated RFC 6238 code and its remaining life, never the seed:
+a code is worth 30 seconds, a seed is worth forever.
+
+`login`, `card`, `bank_account` and `identity` have several fields and no scalar form, so
+their only text form is JSON. `secrets set` sends a string whatever you type, so
+`normalisePayload` parses it — the same reason an `env_bundle` accepts a JSON object.
 
 `key_file` reads return the PEM as a string over the API; `run_with_secrets` instead writes
 it to a `0600` temp file and passes the path, deleting it when the child exits.

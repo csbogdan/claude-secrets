@@ -130,6 +130,12 @@ export class SecretdClient {
       query: { name, mask: mask ? '1' : undefined, version },
     });
 
+  /** Returns a generated code and its remaining life — never the seed itself. */
+  totp = (name: string, version?: number) =>
+    this.req<{ name: string; code: string; expires_in: number }>('GET', '/api/totp', {
+      query: { name, version },
+    });
+
   create = (body: CreateBody) => this.req<SecretMeta>('POST', '/api/secret', { body });
 
   update = (name: string, value: unknown, note?: string) =>

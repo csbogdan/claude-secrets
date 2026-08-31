@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { initCrypto } from '../vault/crypto.js';
 import { Vault, LockedError, ConflictError, NotFoundError } from '../vault/vault.js';
 import { parseDotenv, normalisePayload, primaryValue, maskValue, PayloadError } from '../vault/types.js';
+import { totpCode, totpFrom, parseOtpauth, base32Decode, TotpError } from '../vault/totp.js';
 
 const PASS = 'correct horse battery staple';
 
@@ -454,6 +455,117 @@ describe('audit', () => {
     assert.equal(v.auditLog({ secret: 'a/b' }).length, 1);
     assert.equal(v.auditLog({ action: 'read' }).length, 2);
     assert.equal(JSON.stringify(all).includes('super-secret-value'), false);
+    v.close();
+  });
+});
+
+
+describe('totp', () => {
+  // RFC 6238 Appendix B, SHA-1 column. Seed is ASCII "12345678901234567890".
+  const SEED = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
+
+  test('matches the RFC 6238 test vectors', () => {
+    const vectors: Array<[number, string]> = [
+      [59, '94287082'],
+      [1111111109, '07081804'],
+      [1111111111, '14050471'],
+      [1234567890, '89005924'],
+      [2000000000, '69279037'],
+      [20000000000, '65353130'],
+    ];
+    for (const [seconds, expected] of vectors) {
+      assert.equal(totpCode({ secret: SEED, digits: 8 }, seconds * 1000), expected, `T=${seconds}`);
+    }
+  });
+
+  test('the code is stable within a period and changes across it', () => {
+    // Aligned to a period boundary, or "+29999ms" would straddle two windows.
+    const base = Math.floor(1_000_000_000 / 30) * 30 * 1000;
+    const a = totpCode({ secret: SEED }, base);
+    const b = totpCode({ secret: SEED }, base + 29_999);
+    const c = totpCode({ secret: SEED }, base + 30_000);
+    assert.equal(a, b, 'same 30s window');
+    assert.notEqual(a, c, 'next window');
+  });
+
+  test('an otpauth URI carries its own parameters', () => {
+    const p = parseOtpauth(`otpauth://totp/GitHub:bogdan?secret=${SEED}&digits=8&period=60&issuer=GitHub`);
+    assert.equal(p?.secret, SEED);
+    assert.equal(p?.digits, 8);
+    assert.equal(p?.period, 60);
+    assert.equal(p?.issuer, 'GitHub');
+    assert.equal(p?.account, 'bogdan');
+
+    // A bare seed is not a URI, and totpFrom accepts either form.
+    assert.equal(parseOtpauth(SEED), null);
+    assert.equal(totpFrom(SEED, 59_000).expires_in, 1);
+    assert.equal(
+      totpFrom(`otpauth://totp/x?secret=${SEED}&digits=8`, 59_000).code,
+      '94287082',
+      'URI parameters are honoured',
+    );
+  });
+
+  test('a bad seed fails loudly and never echoes itself', () => {
+    assert.throws(() => base32Decode('not!base32'), TotpError);
+    assert.throws(() => base32Decode(''), TotpError);
+    try {
+      base32Decode('secret-material-1!');
+    } catch (e) {
+      assert.ok(!String((e as Error).message).includes('secret-material'));
+    }
+  });
+});
+
+describe('1password-shaped types', () => {
+  before(async () => initCrypto());
+
+  test('a login needs a password or a totp, and yields the password as its scalar', () => {
+    const l = normalisePayload('login', { username: 'me@x.com', password: 'hunter2' });
+    assert.deepEqual(l, { username: 'me@x.com', password: 'hunter2' });
+    assert.equal(primaryValue('login', l), 'hunter2');
+
+    // An SSO account with only a second factor is still a login.
+    assert.doesNotThrow(() => normalisePayload('login', { username: 'me', totp: 'JBSWY3DPEHPK3PXP' }));
+    assert.throws(() => primaryValue('login', { username: 'me', totp: 'x' }), PayloadError);
+
+    // A username on its own is not a credential.
+    assert.throws(() => normalisePayload('login', { username: 'me' }), PayloadError);
+  });
+
+  test('cards, bank accounts and identities validate their own shape', () => {
+    const card = normalisePayload('card', { number: '4111111111111111', expiry: '12/29', cvv: '123' });
+    assert.equal(primaryValue('card', card), '4111111111111111');
+    assert.throws(() => normalisePayload('card', { number: '4111' }), PayloadError, 'expiry required');
+
+    assert.equal(primaryValue('bank_account', normalisePayload('bank_account', { iban: 'DE89' })), 'DE89');
+    assert.throws(() => normalisePayload('bank_account', { bank: 'Revolut' }), PayloadError);
+
+    assert.doesNotThrow(() => normalisePayload('identity', { passport: 'X1234567' }));
+    assert.throws(() => normalisePayload('identity', {}), PayloadError);
+    assert.throws(() => primaryValue('identity', { passport: 'X' }), PayloadError);
+  });
+
+  test('multi-field types reject a bare string and name their fields', () => {
+    assert.throws(() => normalisePayload('card', 'just a string'), PayloadError);
+    try {
+      normalisePayload('login', 'hunter2');
+    } catch (e) {
+      assert.match(String((e as Error).message), /username/, 'the error says what shape is wanted');
+    }
+    // JSON text is the text form, because `secrets set` can only send a string.
+    assert.deepEqual(normalisePayload('login', '{"username":"me","password":"p"}'), {
+      username: 'me',
+      password: 'p',
+    });
+  });
+
+  test('the new types round-trip through the vault', async () => {
+    const v = await freshVault();
+    v.create({ name: 'bank/card', type: 'card', value: { number: '4111111111111111', expiry: '12/29' } });
+    v.create({ name: 'site/login', type: 'login', value: { username: 'me', password: 'p', totp: 'JBSWY3DPEHPK3PXP' } });
+    assert.equal(v.read('bank/card').value['number' as never], '4111111111111111');
+    assert.equal(v.read('site/login').value['totp' as never], 'JBSWY3DPEHPK3PXP');
     v.close();
   });
 });

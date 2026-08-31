@@ -7,6 +7,10 @@ export const SECRET_TYPES = [
   'connection_string',
   'env_bundle',
   'note',
+  'login',
+  'card',
+  'bank_account',
+  'identity',
 ] as const;
 
 export type SecretType = (typeof SECRET_TYPES)[number];
@@ -49,6 +53,63 @@ export const EnvBundlePayload = z.record(
 
 export const NotePayload = z.object({ text: z.string() });
 
+/**
+ * `totp` holds either a bare base32 seed or a whole `otpauth://` URI — the URI already
+ * carries digits/period/algorithm, so no parallel fields are needed. See vault/totp.ts.
+ */
+export const LoginPayload = z
+  .object({
+    username: z.string(),
+    password: z.string().optional(),
+    totp: z.string().optional(),
+    url: z.string().optional(),
+    notes: z.string().optional(),
+  })
+  .refine((v) => Boolean(v.password ?? v.totp), {
+    message: 'a login needs a password, a totp seed, or both',
+  });
+
+export const CardPayload = z.object({
+  number: z.string(),
+  expiry: z.string(),
+  cvv: z.string().optional(),
+  cardholder: z.string().optional(),
+  brand: z.string().optional(),
+  pin: z.string().optional(),
+  postcode: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const BankAccountPayload = z
+  .object({
+    holder: z.string().optional(),
+    bank: z.string().optional(),
+    iban: z.string().optional(),
+    account_number: z.string().optional(),
+    routing_number: z.string().optional(),
+    bic: z.string().optional(),
+    notes: z.string().optional(),
+  })
+  .refine((v) => Boolean(v.iban ?? v.account_number), {
+    message: 'a bank account needs an iban or an account_number',
+  });
+
+export const IdentityPayload = z
+  .object({
+    full_name: z.string().optional(),
+    dob: z.string().optional(),
+    email: z.string().optional(),
+    phone: z.string().optional(),
+    address: z.string().optional(),
+    national_id: z.string().optional(),
+    passport: z.string().optional(),
+    license: z.string().optional(),
+    notes: z.string().optional(),
+  })
+  .refine((v) => Object.values(v).some(Boolean), {
+    message: 'an identity needs at least one field',
+  });
+
 export const PAYLOAD_SCHEMAS = {
   api_key: ApiKeyPayload,
   oauth: OAuthPayload,
@@ -56,6 +117,10 @@ export const PAYLOAD_SCHEMAS = {
   connection_string: ConnectionStringPayload,
   env_bundle: EnvBundlePayload,
   note: NotePayload,
+  login: LoginPayload,
+  card: CardPayload,
+  bank_account: BankAccountPayload,
+  identity: IdentityPayload,
 } as const;
 
 export type Payload =
@@ -64,7 +129,11 @@ export type Payload =
   | z.infer<typeof KeyFilePayload>
   | z.infer<typeof ConnectionStringPayload>
   | z.infer<typeof EnvBundlePayload>
-  | z.infer<typeof NotePayload>;
+  | z.infer<typeof NotePayload>
+  | z.infer<typeof LoginPayload>
+  | z.infer<typeof CardPayload>
+  | z.infer<typeof BankAccountPayload>
+  | z.infer<typeof IdentityPayload>;
 
 /**
  * Callers may pass a bare string for the simple types instead of the full object.
@@ -79,6 +148,7 @@ export function normalisePayload(type: SecretType, value: unknown): Payload {
     else if (type === 'key_file') v = { pem: v };
     else if (type === 'oauth') v = { access_token: v };
     else if (type === 'env_bundle') v = parseEnvText(v);
+    else v = jsonObject(type, v);
   }
   const schema = PAYLOAD_SCHEMAS[type];
   const parsed = schema.safeParse(v);
@@ -92,6 +162,36 @@ export function normalisePayload(type: SecretType, value: unknown): Payload {
 }
 
 export class PayloadError extends Error {}
+
+/** Field names of a payload schema — `.refine()` wraps the object one level deeper. */
+function fieldsOf(type: SecretType): string[] {
+  const schema = PAYLOAD_SCHEMAS[type] as unknown as {
+    shape?: Record<string, unknown>;
+    _def?: { schema?: { shape?: Record<string, unknown> } };
+  };
+  return Object.keys(schema.shape ?? schema._def?.schema?.shape ?? {});
+}
+
+/**
+ * Types with several fields and no scalar form. A bare string cannot say which field it
+ * is, so the only text form is JSON — `secrets set` sends a string whatever you type,
+ * which is why this lives here rather than in each client.
+ */
+function jsonObject(type: SecretType, text: string): unknown {
+  const s = text.trim();
+  if (!s.startsWith('{')) {
+    const fields = fieldsOf(type);
+    throw new PayloadError(
+      `'${type}' has no single value — pass a JSON object` +
+        (fields.length ? ` with fields: ${fields.join(', ')}` : ''),
+    );
+  }
+  try {
+    return JSON.parse(s);
+  } catch {
+    throw new PayloadError(`'${type}' expects a JSON object, and this is not valid JSON`);
+  }
+}
 
 /**
  * An env bundle handed over as text. A JSON object is a bundle already — accept it rather
@@ -171,8 +271,19 @@ export function primaryValue(type: SecretType, payload: Payload): string {
       return String(p['url']);
     case 'note':
       return String(p['text']);
+    case 'login':
+      if (!p['password']) {
+        throw new PayloadError(`login '${String(p['username'])}' has no password — use its totp instead`);
+      }
+      return String(p['password']);
+    case 'card':
+      return String(p['number']);
+    case 'bank_account':
+      return String(p['iban'] ?? p['account_number']);
     case 'env_bundle':
       throw new PayloadError('env_bundle has no single value — expand it into multiple vars');
+    case 'identity':
+      throw new PayloadError('identity has no single value — read the field you need');
   }
 }
 

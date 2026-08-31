@@ -138,7 +138,7 @@
 <script type="module">
 import { fmtValue, parseValue } from '/ui/payload.js';
 
-const TYPES = ['api_key','oauth','key_file','connection_string','env_bundle','note'];
+const TYPES = ['api_key','oauth','key_file','connection_string','env_bundle','note','login','card','bank_account','identity'];
 const $ = (s) => document.querySelector(s);
 const el = (t, props = {}, kids = []) => {
   const n = Object.assign(document.createElement(t), props);
@@ -295,6 +295,19 @@ async function showDetail(name) {
       reveal.textContent = 'Hide value'; revealed = true;
     } catch (e) { banner(e.message, 'bad'); }
   };
+  // Only for secrets that actually carry a seed; the masked payload still has the key.
+  const totpBtn = rec.value && rec.value.totp
+    ? el('button', { textContent: '2FA code' })
+    : null;
+  if (totpBtn) {
+    totpBtn.onclick = async () => {
+      try {
+        const { code, expires_in } = await api('GET', '/api/totp', { query: { name } });
+        totpBtn.textContent = `${code} (${expires_in}s)`;
+        setTimeout(() => (totpBtn.textContent = '2FA code'), expires_in * 1000);
+      } catch (e) { banner(e.message, 'bad'); }
+    };
+  }
   const copy = el('button', { textContent: 'Copy' });
   copy.onclick = async () => {
     try {
@@ -308,7 +321,7 @@ async function showDetail(name) {
     el('div', { className: 'field' }, [
       el('label', { textContent: `value · ${rec.type} · v${rec.current_version}` }),
       valBox,
-      el('div', { className: 'row', style: 'margin-top:8px' }, [reveal, copy]),
+      el('div', { className: 'row', style: 'margin-top:8px' }, totpBtn ? [reveal, copy, totpBtn] : [reveal, copy]),
     ]),
     metaTable(rec),
     el('div', { className: 'row', style: 'margin-top:12px' }, [
@@ -465,6 +478,10 @@ function valuePlaceholder(type) {
     connection_string: 'postgres://user:pass@host:5432/db',
     env_bundle: 'API_KEY=abc\nDATABASE_URL=postgres://…',
     note: 'free text',
+    login: '{"username":"me@example.com","password":"…","totp":"JBSWY3DPEHPK3PXP","url":"https://…"}',
+    card: '{"number":"4111111111111111","expiry":"12/29","cvv":"123","cardholder":"B Cimpeanu"}',
+    bank_account: '{"holder":"B Cimpeanu","iban":"DE89370400440532013000","bic":"COBADEFF"}',
+    identity: '{"full_name":"B Cimpeanu","dob":"1990-01-01","passport":"X1234567"}',
   }[type] || '';
 }
 

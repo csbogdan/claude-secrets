@@ -7,6 +7,7 @@ import { primaryValue, maskValue, SECRET_TYPES, type SecretType, type Payload } 
 import type { Config } from './config.js';
 import { feed, formatEvent, log, type FeedEvent } from './log.js';
 import { refreshIfNeeded, isExpired } from './oauth.js';
+import { totpFrom } from '../vault/totp.js';
 import { runWithSecrets, type SecretMapping } from './exec.js';
 import { runBackup } from './backup.js';
 
@@ -170,6 +171,21 @@ async function handle(
           stale: out.stale,
           refreshed: out.refreshed,
         });
+        return;
+      }
+
+      case 'GET /api/totp': {
+        const name = requireName(url);
+        const rec = vault.read(name, versionParam(url));
+        const spec = (rec.value as Record<string, unknown>)['totp'];
+        if (typeof spec !== 'string' || !spec.trim()) {
+          throw new VaultError(`secret '${name}' has no totp seed`);
+        }
+        // The code goes out, never the seed: a code is worth 30 seconds, a seed forever.
+        const { code, expires_in } = totpFrom(spec);
+        log.op('totp', true, name, { ...ctx, secret: name });
+        vault.recordAudit('totp', true, { ...ctx, secret: name, detail: 'code generated' });
+        json(res, 200, { name, code, expires_in });
         return;
       }
 
@@ -386,16 +402,19 @@ function maskPayload(type: SecretType, payload: Payload): Payload {
       Object.entries(payload as Record<string, string>).map(([k, v]) => [k, maskValue(v)]),
     );
   }
-  // token_url belongs here too: it is part of the encrypted payload and can carry
-  // userinfo or signed query parameters.
-  const SENSITIVE = new Set([
-    'value', 'text', 'pem', 'url', 'token_url', 'access_token', 'refresh_token',
-    'client_secret', 'client_id', 'password', 'passphrase',
+  // An allowlist, not a denylist. A denylist fails open: every field added to a payload
+  // is rendered in full until someone remembers to list it, which for a vault is exactly
+  // the wrong direction to be wrong in. Anything not named here is masked.
+  // Note `url` is absent deliberately — a connection_string URL carries its own password.
+  const PUBLIC = new Set([
+    'host', 'port', 'database', 'user', 'username', 'scopes', 'expires_at', 'fingerprint',
+    'brand', 'cardholder', 'expiry', 'bank', 'holder', 'issuer', 'account',
+    'digits', 'period', 'algorithm',
   ]);
   return Object.fromEntries(
     Object.entries(payload as Record<string, unknown>).map(([k, v]) => [
       k,
-      SENSITIVE.has(k) && typeof v === 'string' ? maskValue(v) : v,
+      !PUBLIC.has(k) && typeof v === 'string' ? maskValue(v) : v,
     ]),
   ) as Payload;
 }
