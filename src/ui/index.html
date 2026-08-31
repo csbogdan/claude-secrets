@@ -564,7 +564,8 @@ function renderForm(rec) {
     description: el('input', { value: rec?.description || '', placeholder: 'Stripe test mode secret key' }),
     service: el('input', { value: rec?.service || '', placeholder: 'stripe' }),
     env: el('input', { value: rec?.env || '', placeholder: 'test' }),
-    tags: el('input', { value: (rec?.tags || []).join(', '), placeholder: 'payments, billing' }),
+    tags: el('input', { value: (rec?.tags || []).filter((t) => t !== HIDDEN_TAG).join(', '), placeholder: 'payments, billing' }),
+    hidden: el('input', { type: 'checkbox', checked: isHidden(rec) }),
     aliases: el('input', { value: (rec?.aliases || []).join(', '), placeholder: 'stripe-test' }),
     url: el('input', { value: rec?.url || '', placeholder: 'https://dashboard.stripe.com' }),
   };
@@ -586,13 +587,18 @@ function renderForm(rec) {
     field('description', f.description),
     el('div', { className: 'row' }, [field('tags (comma separated)', f.tags), field('aliases (comma separated)', f.aliases)]),
     field('url', f.url),
+    field('hidden — keep out of the list until "Show hidden"', f.hidden),
     el('p', { className: 'note', textContent: 'Description and aliases are what make natural-language search work later.' }),
   ];
 
   const save = btn(isNew ? 'Create' : 'Save', async () => {
+    // The checkbox is the only control for the hidden tag, so typing it into the tags box
+    // cannot leave the two disagreeing.
+    const tags = splitList(f.tags.value).filter((t) => t !== HIDDEN_TAG);
+    if (f.hidden.checked) tags.push(HIDDEN_TAG);
     const meta = {
       description: f.description.value, service: f.service.value, env: f.env.value, url: f.url.value,
-      tags: splitList(f.tags.value), aliases: splitList(f.aliases.value),
+      tags, aliases: splitList(f.aliases.value),
     };
     try {
       if (isNew) {

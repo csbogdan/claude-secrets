@@ -166,6 +166,34 @@ describe('web UI', () => {
     await inList.waitFor({ timeout: 5000 });
   });
 
+  test('a secret can be marked hidden as it is created, and unmarked by editing it', async () => {
+    await startNewSecret('personal/thing', 'note');
+    await page.getByLabel('text').fill('private');
+    await page.getByLabel('hidden').check();
+    await page.getByRole('button', { name: 'Create' }).click();
+
+    const inList = page.locator('#list').getByText('personal/thing');
+    // The detail pane shows the value masked, so wait on the title, not on the text.
+    await page.waitForFunction(
+      "document.querySelector('#detail-title').textContent === 'personal/thing'",
+      undefined,
+      { timeout: 5000 },
+    );
+    await assert.rejects(
+      inList.waitFor({ timeout: 1500 }),
+      'a secret created as hidden never appears in the list',
+    );
+
+    // And the checkbox is the control both ways: unticking it in Edit metadata brings it back.
+    await page.getByRole('button', { name: 'Show hidden' }).click();
+    await inList.click();
+    await page.getByRole('button', { name: 'Edit metadata' }).click();
+    await page.getByLabel('hidden').uncheck();
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await page.getByRole('button', { name: 'Showing hidden' }).click();
+    await inList.waitFor({ timeout: 5000 });
+  });
+
   test('a required field the form left empty is refused by the server, not stored half-made', async () => {
     await startNewSecret('bank/card', 'card');
 

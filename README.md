@@ -93,8 +93,9 @@ secrets gen --length 32 --symbols
 
 `gen` stores nothing and never touches the vault — pipe it into `secrets set` yourself.
 
-Secrets tagged `hidden` are left out of the web UI's list until you press **Show hidden**,
-and every secret has a **Hide** button. It is a screen-sharing courtesy, not access
+Secrets tagged `hidden` are left out of the web UI's list until you press **Show hidden**.
+There is a **hidden** checkbox on the new-secret and edit-metadata forms, and a
+**Hide**/**Unhide** button on every secret. It is a screen-sharing courtesy, not access
 control — hidden secrets are still in the API, still in search, still readable over MCP
 and the CLI. The toggle lives in `sessionStorage`, so a new tab starts hidden again.
 
