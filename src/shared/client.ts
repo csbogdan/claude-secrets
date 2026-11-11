@@ -2,6 +2,8 @@ import type { SecretMeta, SearchHit, AuditEntry } from '../vault/vault.js';
 import type { Payload, SecretType } from '../vault/types.js';
 import { resolvePassword } from './credentials.js';
 import { runWithSecrets, type SecretMapping } from './exec.js';
+import { request as httpRequest } from 'node:http';
+import { request as httpsRequest } from 'node:https';
 
 /** How long a health probe may take before a daemon counts as unreachable. */
 const PROBE_MS = 1500;
@@ -98,15 +100,10 @@ export class SecretdClient {
     const first = (b: string): string[] => [b, ...this.bases.filter((x) => x !== b)];
     if (this.picked && Date.now() - this.picked.at < STICKY_MS) return first(this.picked.base);
     for (const b of this.bases) {
-      try {
-        const r = await fetch(new URL('/api/health', b), { signal: AbortSignal.timeout(PROBE_MS) });
-        const h = (await r.json()) as { locked?: boolean };
-        if (r.ok && !h.locked) {
-          this.picked = { base: b, at: Date.now() };
-          return first(b);
-        }
-      } catch {
-        /* down or unreachable: try the next one */
+      const h = await probe(b);
+      if (h && !h.locked) {
+        this.picked = { base: b, at: Date.now() };
+        return first(b);
       }
     }
     return this.bases; // nothing healthy: try them in order and report what fails
@@ -300,6 +297,32 @@ export class SecretdClient {
       reader.releaseLock();
     }
   }
+}
+
+/**
+ * GET /api/health with a hard deadline. Not fetch: an aborted fetch leaves its connect
+ * attempt alive for undici's 10s connect timeout, which kept every CLI call alive for
+ * 10s whenever the primary was unreachable. Destroying the socket ends it.
+ */
+function probe(base: string): Promise<{ locked?: boolean } | null> {
+  return new Promise((resolve) => {
+    let url: URL;
+    try {
+      url = new URL('/api/health', base);
+    } catch {
+      return resolve(null);
+    }
+    const req = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, { timeout: PROBE_MS }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => (body += c));
+      res.on('end', () => resolve(res.statusCode === 200 ? (safeJson(body) as { locked?: boolean }) : null));
+      res.on('error', () => resolve(null));
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(null));
+    req.end();
+  });
 }
 
 function safeJson(text: string): unknown {
