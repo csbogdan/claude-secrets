@@ -244,8 +244,9 @@ log in `~/.secretd/logs/github-backup.log`).
 
 ```
 src/vault/     crypto (Argon2id + XChaCha20-Poly1305), schema, CRUD/search/versioning
-src/daemon/    HTTP API, activity feed, Keychain unlock, OAuth refresh, exec, backup
-src/cli/       the `secrets` command
+src/daemon/    HTTP API, activity feed, Keychain unlock, OAuth refresh, backup, replica mode
+src/shared/    HTTP client with failover, local exec, credentials, Keychain
+src/cli/       the `secrets` command, including `replica-sync`
 src/mcp/       MCP stdio server
 src/ui/        single-page web UI
 skills/        the secret-vault Claude skill

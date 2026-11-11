@@ -14,8 +14,9 @@ MCP server for Claude Code, CLI for humans. Trusted LAN, one operator, no multi-
 | Claude reads | `get_secret` returns plaintext |
 | Search | SQLite FTS5 over metadata + aliases (never over values) |
 | Lifecycle | Versioned writes + rollback. No expiry scheduler. |
-| Backup | Nightly encrypted snapshot, 30-day retention |
-| Extras | Append-only audit log + live feed; optional `run_with_secrets` |
+| Backup | Nightly encrypted snapshot, 30-day retention; daily push to a private GitHub repo |
+| Replica | Optional second Mac: local copy synced hourly, clients fail over to it |
+| Extras | Append-only audit log + live feed; `run_with_secrets` runs on the caller's machine |
 
 ## Components
 
@@ -24,10 +25,13 @@ MCP server for Claude Code, CLI for humans. Trusted LAN, one operator, no multi-
   vault.db          encrypted SQLite
   password          only if the Keychain is unavailable (0600)
   backups/          nightly snapshots
+  github/           primary only: clone of the offsite backup repo
+  replica-outbox.jsonl  replica only: names written since the last sync, never values
 
 secretd             daemon — owns the vault, HTTP API on :7777, launchd at login
-secrets             CLI — thin HTTP client
-secrets-mcp         MCP stdio shim — thin HTTP client, registered with Claude Code
+secrets             CLI — thin HTTP client; `secrets exec` spawns the command locally
+secrets-mcp         MCP stdio shim — thin HTTP client, registered with Claude Code;
+                    `run_with_secrets` spawns the command locally, not in the daemon
 skills/secret-vault Claude skill — teaches search → disambiguate → get
 ```
 
@@ -165,7 +169,7 @@ otherwise `/secrets/github/pat/versions` is ambiguous with a secret actually nam
 `github/pat/versions`.
 
 ```
-GET    /api/health                  → { ok, locked, initialised, secrets }   (no auth)
+GET    /api/health                  → { ok, locked, initialised, secrets, replica?, pending? }   (no auth)
 POST   /api/unlock                  { passphrase }
 POST   /api/lock
 
@@ -180,8 +184,8 @@ DELETE /api/secret?name=X
 GET    /api/versions?name=X         → [{ version, created_at, note, current }]   no values
 POST   /api/rollback                { name, version }           → new version copying old
 
-POST   /api/exec                    { command, args, secrets: [{name, as, mode}] }
 POST   /api/backup                  → snapshot now
+GET    /api/export                  → the whole vault as one consistent, still-encrypted file
 GET    /api/logs?follow=1           → SSE activity stream
 GET    /api/audit                   ?since=&secret=&action=&limit=
 
@@ -242,14 +246,48 @@ not just to structured logs.
 - Values are **never** logged. Log lines carry names, callers, and outcomes only.
 - Nothing runs silently. A silent operation is treated as a bug.
 
+## Exec runs on the caller's machine
+
+`run_with_secrets` and `secrets exec` fetch each value with `GET /api/secret`, then spawn
+the command in the caller's own process, machine and working directory. The daemon only
+ever serves values. Running the command inside the daemon put it on the wrong host as
+soon as a client lived on another machine. Each fetch is audited as a `read`.
+
 ## Backup
 
-launchd nightly: `sqlite3 vault.db ".backup ~/.secretd/backups/vault-YYYYMMDD.db"` —
-a real online backup, not a file copy, so an in-flight write can't tear it. 30-day retention,
-oldest pruned first. Progress and outcome hit the activity feed like everything else.
+The daemon snapshots itself 60s after start and every 24h after:
+`VACUUM INTO ~/.secretd/backups/vault-YYYYMMDD-HHMMSS.db`, an online backup, not a file
+copy, so an in-flight write can't tear it. 30-day retention, oldest pruned first. Progress
+and outcome hit the activity feed like everything else.
+
+Offsite: `scripts/backup-github.sh` (launchd, daily 04:00) takes a fresh snapshot and pushes
+it as `vault.db` to the private repo `csbogdan/secretd-backup`. Nothing else leaves the
+machine: not the password file, not the WAL, not the logs.
 
 Backups are encrypted with the same master key. **The passphrase is the only key material.**
 Lose it and the backups are as unreadable as the original.
+
+## Replica
+
+One primary holds the vault. A second Mac can hold a replica, installed with
+`install.sh --replica <primary-url>`:
+
+- **Clients fail over.** `SECRETD_URL` is a primary-first list, e.g.
+  `http://macmini:7777,http://127.0.0.1:7777`. Each call probes `/api/health` with a 1.5s
+  deadline and uses the first daemon that is up and unlocked, remembering it for 15s. A
+  locked daemon (423) also fails over. No daemon answering is an error naming all of them.
+- **Replica daemon.** `SECRETD_REPLICA=1`, bound to `127.0.0.1`. It accepts writes and
+  journals each one by name in `replica-outbox.jsonl`. It never refreshes OAuth tokens:
+  rotating a refresh token on a copy would invalidate the primary's.
+- **Sync.** `secrets replica-sync`, hourly and at login via launchd:
+  1. replay every journaled name onto the primary: the replica's current value and
+     metadata become the primary's newest version, or the secret is deleted there;
+  2. download `GET /api/export` from the primary;
+  3. stop the local daemon, drop the old WAL, swap the file in, start it again.
+  Primary unreachable or locked: nothing changes. Replay is idempotent, so a failed run
+  retries next hour. A write that lands mid-sync aborts the swap and is replayed next run.
+- **Limits.** Only the latest value per secret is replayed, not intermediate versions.
+  Audit entries written on the replica are discarded at the next swap.
 
 ## Build order
 
