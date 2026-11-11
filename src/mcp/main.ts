@@ -39,7 +39,7 @@ async function guard(fn: () => Promise<unknown>): Promise<ToolResult> {
         return fail('The vault is locked. The operator must run `secrets unlock` on the host.');
       }
       if (err.status === 401) {
-        return fail('Unauthorised — secrets-mcp has a stale or missing bearer token (SECRETD_TOKEN).');
+        return fail('Unauthorised — this machine holds the wrong vault password. The operator runs `secrets login`.');
       }
       return fail(err.message);
     }
@@ -281,7 +281,7 @@ server.registerTool(
   {
     title: 'Run a command with secrets injected',
     description:
-      'Run a command with secrets injected into its environment, a 0600 temp file, or its stdin — WITHOUT the values entering this conversation. Prefer this over get_secret whenever the secret only needs to reach a program. Mode "env" sets an environment variable (default name is the secret name upper-snake-cased). Mode "file" writes a temp file and sets the variable to its path. `{{secret-name}}` in args is substituted with the value or path.',
+      'Run a command with secrets injected into its environment, a 0600 temp file, or its stdin — WITHOUT the values entering this conversation. The command runs on THIS machine, in this working directory, wherever the vault daemon lives. Prefer this over get_secret whenever the secret only needs to reach a program. Mode "env" sets an environment variable (default name is the secret name upper-snake-cased). Mode "file" writes a temp file and sets the variable to its path. `{{secret-name}}` in args is substituted with the value or path.',
     inputSchema: {
       command: z.string().describe('Executable, e.g. "gh" or "psql"'),
       args: z.array(z.string()).optional(),
@@ -314,10 +314,10 @@ server.registerTool(
   'vault_status',
   {
     title: 'Vault status',
-    description: 'Whether the vault daemon is reachable, initialised and unlocked, and how many secrets it holds.',
+    description: 'Whether the vault daemon is reachable, initialised and unlocked, and how many secrets it holds. `served_by` is the daemon that answered; `replica: true` means the primary was unreachable and a local copy answered, with `pending` writes queued for the primary.',
     inputSchema: {},
   },
-  async () => guard(() => api.health()),
+  async () => guard(async () => ({ ...(await api.health()), served_by: api.lastBase })),
 );
 
 async function main(): Promise<void> {

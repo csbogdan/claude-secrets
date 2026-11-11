@@ -1,5 +1,7 @@
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, sep } from 'node:path';
 import { Vault, VaultError, NotFoundError, LockedError } from '../vault/vault.js';
@@ -8,7 +10,6 @@ import type { Config } from './config.js';
 import { feed, formatEvent, log, type FeedEvent } from './log.js';
 import { refreshIfNeeded, isExpired } from './oauth.js';
 import { totpFrom } from '../vault/totp.js';
-import { runWithSecrets, type SecretMapping } from './exec.js';
 import { runBackup } from './backup.js';
 
 const UI_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'ui');
@@ -57,6 +58,7 @@ async function handle(
       initialised: vault.initialised,
       secrets: vault.locked ? null : vault.count(),
       version: 1,
+      ...(cfg.replica ? { replica: true, pending: pendingWrites(cfg) } : {}),
     });
     return;
   }
@@ -86,6 +88,11 @@ async function handle(
   }
 
   const ctx = { caller, source };
+  // On a replica, every successful write is journaled by name (never by value) so
+  // `secrets replica-sync` can replay it onto the primary before replacing this copy.
+  const journal = (op: 'upsert' | 'delete', name: string): void => {
+    if (cfg.replica) appendFileSync(cfg.outboxPath, JSON.stringify({ op, name, at: Date.now() }) + '\n');
+  };
 
   try {
     switch (`${method} ${path}`) {
@@ -141,8 +148,9 @@ async function handle(
         const rec = vault.read(name, version);
         // An older version is being inspected, not consumed, so it is never refreshed —
         // that would write a new version as a side effect of looking at history.
+        // A replica never refreshes: see Config.replica.
         const out =
-          version === undefined
+          version === undefined && !cfg.replica
             ? await refreshIfNeeded(vault, rec, ctx)
             : {
                 record: rec,
@@ -217,6 +225,7 @@ async function handle(
         });
         log.op('create', true, `${meta.name} (${meta.type})`, { ...ctx, secret: meta.name });
         vault.recordAudit('create', true, { ...ctx, secret: meta.name, detail: meta.type });
+        journal('upsert', meta.name);
         json(res, 201, meta);
         return;
       }
@@ -227,6 +236,7 @@ async function handle(
         const version = vault.update(name, body['value'], str(body['note']));
         log.op('update', true, `${name} -> v${version}`, { ...ctx, secret: name });
         vault.recordAudit('update', true, { ...ctx, secret: name, detail: `v${version}` });
+        journal('upsert', name);
         json(res, 200, { name, version });
         return;
       }
@@ -244,6 +254,7 @@ async function handle(
         });
         log.op('patch', true, name, { ...ctx, secret: name });
         vault.recordAudit('patch', true, { ...ctx, secret: name });
+        journal('upsert', meta.name);
         json(res, 200, meta);
         return;
       }
@@ -253,6 +264,7 @@ async function handle(
         const removed = vault.remove(name);
         log.op('delete', true, removed, { ...ctx, secret: removed });
         vault.recordAudit('delete', true, { ...ctx, secret: removed });
+        journal('delete', removed);
         json(res, 200, { ok: true, name: removed });
         return;
       }
@@ -275,29 +287,26 @@ async function handle(
         const next = vault.rollback(name, version);
         log.op('rollback', true, `${name} v${version} -> v${next}`, { ...ctx, secret: name });
         vault.recordAudit('rollback', true, { ...ctx, secret: name, detail: `v${version}->v${next}` });
+        journal('upsert', name);
         json(res, 200, { name, version: next, restored_from: version });
         return;
       }
 
-      case 'POST /api/exec': {
-        const body = (await readJson(req)) as {
-          command?: string;
-          args?: string[];
-          secrets?: SecretMapping[];
-          cwd?: string;
-          timeoutMs?: number;
-        };
-        if (!body.command) throw new VaultError('exec requires { command }');
+      case 'GET /api/export': {
+        // A consistent copy of the whole vault, still encrypted: what a replica syncs from.
         if (vault.locked) throw new LockedError();
-        const result = await runWithSecrets(
-          vault,
-          body.command,
-          body.args ?? [],
-          body.secrets ?? [],
-          { cwd: body.cwd, timeoutMs: body.timeoutMs ?? 120_000, ...ctx },
-        );
-        log.op('exec', result.code === 0, `${body.command} -> exit ${result.code}`, ctx);
-        json(res, 200, result);
+        const dir = mkdtempSync(join(tmpdir(), 'secretd-export-'));
+        try {
+          const file = join(dir, 'vault.db');
+          vault.backupTo(file);
+          const bytes = readFileSync(file);
+          log.op('backup', true, `export to ${source} (${(bytes.length / 1024).toFixed(0)} KiB)`, ctx);
+          vault.recordAudit('backup', true, { ...ctx, detail: `export ${bytes.length}B` });
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': bytes.length });
+          res.end(bytes);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
         return;
       }
 
@@ -332,6 +341,12 @@ async function handle(
 }
 
 // ------------------------------------------------------------------- helpers
+
+/** Writes journaled on this replica that the primary has not seen yet. */
+function pendingWrites(cfg: Config): number {
+  if (!existsSync(cfg.outboxPath)) return 0;
+  return readFileSync(cfg.outboxPath, 'utf8').split('\n').filter(Boolean).length;
+}
 
 function handleError(
   err: unknown,

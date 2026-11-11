@@ -53,16 +53,22 @@ ${c.bold('Write')}
 ${c.bold('Move to another machine')}
   secrets export <file> [-y]         write a portable encrypted copy of the whole vault
   secrets restore <file> [-y]        install one here as this machine's vault
+  secrets replica-sync [primary-url]  on a replica: replay local writes onto the primary,
+                                     then replace this vault with a fresh copy of it
+                                     (hourly via launchd; see install.sh --replica)
 
 ${c.bold('Use without exposing the value')}
   secrets exec <name>[,<name>...] -- <command> [args...]
       Injects secrets into the child's environment. Values never hit your terminal.
+      The command runs on THIS machine; only the values come from the daemon.
       e.g. secrets exec github/pat -- gh repo list
            secrets exec deploy-key:file -- ssh -i {{deploy-key}} host
            secrets exec vpn/login:totp -- vpn-cli --otp $VPN_LOGIN
 
 ${c.bold('Types')}  ${SECRET_TYPES.join(', ')}
 ${c.bold('Env')}    SECRETD_URL (${defaultBaseUrl()}), SECRETD_PASSWORD, SECRETD_HOME
+        SECRETD_URL may list daemons primary-first, comma-separated, for failover:
+        http://macmini:7777,http://127.0.0.1:7777
 
 One password does everything: it encrypts the vault, unlocks the daemon, and
 authenticates every client. There is no separate token.
@@ -175,6 +181,18 @@ async function main(): Promise<number> {
       return cmdExport(must(positionals[0], 'export <file>'), v['yes'] === true);
     case 'restore':
       return cmdRestore(must(positionals[0], 'restore <file>'), v['yes'] === true);
+    case 'replica-sync': {
+      const primary =
+        positionals[0] ??
+        process.env['SECRETD_PRIMARY'] ??
+        defaultBaseUrl().split(',').map((u) => u.trim()).find((u) => !/127\.0\.0\.1|localhost/.test(u));
+      if (!primary) {
+        process.stderr.write(c.red('usage: secrets replica-sync <primary-url> (or set SECRETD_PRIMARY)\n'));
+        return 2;
+      }
+      const { replicaSync } = await import('./replica.js');
+      return replicaSync(primary);
+    }
     case 'backup': {
       const r = await api.backup();
       process.stdout.write(`${c.green('backup written')} ${r.path} (${(r.bytes / 1024).toFixed(0)} KiB, ${r.pruned} pruned)\n`);

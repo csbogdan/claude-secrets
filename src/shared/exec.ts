@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Vault } from '../vault/vault.js';
 import { primaryValue, type SecretType, type Payload } from '../vault/types.js';
 import { totpFrom } from '../vault/totp.js';
-import { log } from './log.js';
+
+/** Fetches one secret's current type and payload. The daemon audits each fetch as a read. */
+export type SecretResolver = (name: string) => Promise<{ type: SecretType; value: Payload }>;
 
 export type InjectMode = 'env' | 'file' | 'stdin' | 'totp';
 
@@ -41,21 +42,25 @@ export function envNameFor(secretName: string): string {
  * or its stdin — so values reach the child process without ever entering the
  * model's context. Temp files are removed when the child exits.
  *
+ * It runs in the CALLER's process (the MCP server or the CLI), on the caller's machine
+ * and in its working directory. Only the values come from the daemon, which may be on
+ * another host. Running it inside the daemon put the command on the wrong machine.
+ *
  * `{{secret-name}}` placeholders in argv are substituted with the temp file path
  * (file mode) or the value itself (env mode), which is what makes things like
  * `ssh -i {{deploy-key}}` work.
  */
 export async function runWithSecrets(
-  vault: Vault,
+  resolve: SecretResolver,
   command: string,
   args: string[],
   mappings: SecretMapping[],
-  opts: { cwd?: string; timeoutMs?: number; caller?: string; source?: string } = {},
+  opts: { cwd?: string; timeoutMs?: number } = {},
 ): Promise<ExecResult> {
-  // The child inherits our environment, which on this daemon can hold the master
-  // passphrase and the API token. Neither belongs in an arbitrary subprocess.
+  // The child inherits our environment, which can hold the vault password.
+  // It does not belong in an arbitrary subprocess.
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  for (const k of ['SECRETD_PASSPHRASE', 'SECRETD_TOKEN']) delete env[k];
+  for (const k of ['SECRETD_PASSWORD', 'SECRETD_PASSPHRASE', 'SECRETD_TOKEN']) delete env[k];
   const stdinParts: string[] = [];
   const substitutions = new Map<string, string>();
   let tmpDir: string | null = null;
@@ -63,7 +68,6 @@ export async function runWithSecrets(
 
   try {
     for (const m of mappings) {
-      const rec = vault.read(m.name);
       const mode: InjectMode = m.mode ?? 'env';
       // Validated here rather than in each client: an unknown mode used to fall through
       // to 'env', which since totp mode exists would inject the password where the
@@ -71,18 +75,13 @@ export async function runWithSecrets(
       if (!INJECT_MODES.includes(mode)) {
         throw new Error(`unknown inject mode '${mode}' — one of: ${INJECT_MODES.join(', ')}`);
       }
-      const type = rec.type as SecretType;
-      const payload = rec.value as Payload;
+      const rec = await resolve(m.name);
+      const type = rec.type;
+      const payload = rec.value;
 
       if (type === 'env_bundle') {
         // A bundle has no single value — expand every key into the environment.
         for (const [k, v] of Object.entries(payload as Record<string, string>)) env[k] = v;
-        vault.recordAudit('exec', true, {
-          secret: m.name,
-          caller: opts.caller,
-          source: opts.source,
-          detail: 'env_bundle expanded',
-        });
         continue;
       }
 
@@ -116,24 +115,11 @@ export async function runWithSecrets(
         env[varName] = value;
         substitutions.set(m.name, value);
       }
-
-      vault.recordAudit('exec', true, {
-        secret: m.name,
-        caller: opts.caller,
-        source: opts.source,
-        detail: `injected as ${mode}`,
-      });
     }
 
     const finalArgs = args.map((a) =>
       a.replace(/\{\{([^}]+)\}\}/g, (whole, key: string) => substitutions.get(key.trim()) ?? whole),
     );
-
-    log.info(`exec ${command} with ${mappings.length} secret(s)`, {
-      action: 'exec',
-      caller: opts.caller,
-      source: opts.source,
-    });
 
     return await new Promise<ExecResult>((resolve, reject) => {
       const child = spawn(command, finalArgs, {

@@ -9,18 +9,34 @@ PLIST_LABEL="com.stefan.secretd"
 PLIST="$HOME/Library/LaunchAgents/${PLIST_LABEL}.plist"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 RESTORE=""
+REPLICA=""
+# --replica <primary-url> makes this machine a replica of the vault at that URL: a local
+# daemon on 127.0.0.1 holding a copy that `secrets replica-sync` refreshes hourly, and
+# clients that use the primary when it answers and this copy when it does not.
 # --restore <file> migrates an exported vault from another machine instead of
 # creating an empty one. Everything else about the install is identical.
 while [ $# -gt 0 ]; do
   case "$1" in
     --restore) RESTORE="$2"; shift 2 ;;
     --restore=*) RESTORE="${1#*=}"; shift ;;
-    -h|--help) echo "usage: install.sh [--restore <exported-vault.db>]"; exit 0 ;;
+    --replica) REPLICA="$2"; shift 2 ;;
+    --replica=*) REPLICA="${1#*=}"; shift ;;
+    -h|--help) echo "usage: install.sh [--restore <exported-vault.db>] [--replica <primary-url>]"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 SECRETD_HOME="${SECRETD_HOME:-$HOME/.secretd}"
 PORT="${SECRETD_PORT:-7777}"
+LOCAL_URL="http://127.0.0.1:${PORT}"
+if [ -n "$REPLICA" ]; then
+  BIND=127.0.0.1                      # a replica serves this machine only
+  CLIENT_URL="${REPLICA},${LOCAL_URL}" # primary first, the local copy when it is unreachable
+  REPLICA_ENV="<key>SECRETD_REPLICA</key><string>1</string>"
+else
+  BIND=0.0.0.0
+  CLIENT_URL="$LOCAL_URL"
+  REPLICA_ENV=""
+fi
 
 say() { printf '\033[36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33m==>\033[0m %s\n' "$1"; }
@@ -34,6 +50,8 @@ if [ -n "$RESTORE" ]; then
   [ -f "$RESTORE" ] || { echo "no such file: $RESTORE" >&2; exit 1; }
   say "restoring vault from $RESTORE"
   node "$REPO/dist/cli/main.js" restore "$RESTORE"
+elif [ -n "$REPLICA" ]; then
+  say "replica of $REPLICA — the first sync fills the vault"
 elif [ ! -f "$SECRETD_HOME/vault.db" ]; then
   say "no vault yet — creating one (you will be asked for a password)"
   node "$REPO/dist/cli/main.js" init
@@ -67,8 +85,9 @@ cat > "$PLIST" <<PLIST_EOF
   <key>EnvironmentVariables</key>
   <dict>
     <key>SECRETD_HOME</key><string>${SECRETD_HOME}</string>
-    <key>SECRETD_HOST</key><string>0.0.0.0</string>
+    <key>SECRETD_HOST</key><string>${BIND}</string>
     <key>SECRETD_PORT</key><string>${PORT}</string>
+    ${REPLICA_ENV}
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
@@ -93,6 +112,42 @@ curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 \
   && say "daemon healthy on port ${PORT}" \
   || warn "daemon did not come up — check $SECRETD_HOME/logs/secretd.log"
 
+if [ -n "$REPLICA" ]; then
+  SYNC_LABEL="${PLIST_LABEL}-sync"
+  SYNC_PLIST="$HOME/Library/LaunchAgents/${SYNC_LABEL}.plist"
+  say "installing hourly replica sync ($SYNC_LABEL)"
+  cat > "$SYNC_PLIST" <<SYNC_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${SYNC_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${NODE}</string>
+    <string>--no-warnings</string>
+    <string>${REPO}/dist/cli/main.js</string>
+    <string>replica-sync</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SECRETD_HOME</key><string>${SECRETD_HOME}</string>
+    <key>SECRETD_PORT</key><string>${PORT}</string>
+    <key>SECRETD_PRIMARY</key><string>${REPLICA}</string>
+    ${REPLICA_ENV}
+  </dict>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>${SECRETD_HOME}/logs/replica-sync.log</string>
+  <key>StandardErrorPath</key><string>${SECRETD_HOME}/logs/replica-sync.log</string>
+  <key>ProcessType</key><string>Background</string>
+</dict>
+</plist>
+SYNC_EOF
+  launchctl bootout "gui/$(id -u)/${SYNC_LABEL}" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$SYNC_PLIST"
+fi
+
 say "installing secret-vault skill"
 mkdir -p "$HOME/.claude/skills"
 ln -sfn "$REPO/skills/secret-vault" "$HOME/.claude/skills/secret-vault"
@@ -103,7 +158,7 @@ if command -v claude >/dev/null 2>&1; then
   # the login Keychain at call time, so rotating the password needs no re-registration.
   claude mcp remove secrets --scope user 2>/dev/null || true
   claude mcp add secrets --scope user \
-    --env "SECRETD_URL=http://127.0.0.1:${PORT}" \
+    --env "SECRETD_URL=${CLIENT_URL}" \
     -- "$NODE" --no-warnings "$REPO/dist/mcp/main.js"
 else
   warn "claude CLI not found — register the MCP server manually (see README)"
@@ -118,6 +173,7 @@ $(say "done")
   Restart   launchctl kickstart -k gui/$(id -u)/${PLIST_LABEL}
 
   One password does everything. On another machine: secrets login
+$( [ -n "$REPLICA" ] && printf '\n  Replica   syncs hourly from %s, log in %s\n  Shell     set SECRETD_URL=%s for the CLI too\n' "$REPLICA" "$SECRETD_HOME/logs/replica-sync.log" "$CLIENT_URL" )
 
 DONE
 

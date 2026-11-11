@@ -1,6 +1,12 @@
 import type { SecretMeta, SearchHit, AuditEntry } from '../vault/vault.js';
 import type { Payload, SecretType } from '../vault/types.js';
 import { resolvePassword } from './credentials.js';
+import { runWithSecrets, type SecretMapping } from './exec.js';
+
+/** How long a health probe may take before a daemon counts as unreachable. */
+const PROBE_MS = 1500;
+/** How long a healthy daemon is reused before it is probed again. */
+const STICKY_MS = 15_000;
 
 export class ApiError extends Error {
   constructor(
@@ -49,6 +55,13 @@ export interface CreateBody {
   note?: string;
 }
 
+/**
+ * SECRETD_URL may list several daemons, primary first, comma-separated:
+ *   SECRETD_URL=http://macmini:7777,http://127.0.0.1:7777
+ * Each call goes to the first one that is up and unlocked. A laptop therefore falls back
+ * to its local replica when the primary is unreachable, and returns to the primary as
+ * soon as it answers again.
+ */
 export function defaultBaseUrl(): string {
   return process.env['SECRETD_URL'] ?? `http://127.0.0.1:${process.env['SECRETD_PORT'] ?? 7777}`;
 }
@@ -59,11 +72,45 @@ export function defaultPassword(): string {
 }
 
 export class SecretdClient {
+  private readonly bases: string[];
+  private picked: { base: string; at: number } | null = null;
+  /** The daemon that answered the most recent request. */
+  lastBase = '';
+
   constructor(
-    private readonly baseUrl: string = defaultBaseUrl(),
+    baseUrl: string = defaultBaseUrl(),
     private password: string = defaultPassword(),
     private readonly caller: string = 'cli',
-  ) {}
+  ) {
+    const list = baseUrl.split(',').map((b) => b.trim()).filter(Boolean);
+    this.bases = list.length ? list : ['http://127.0.0.1:7777'];
+  }
+
+  private headers(): Record<string, string> {
+    const h: Record<string, string> = { 'x-secretd-caller': this.caller };
+    if (this.password) h['authorization'] = `Bearer ${this.password}`;
+    return h;
+  }
+
+  /** The daemons to try for the next call, the preferred one first. */
+  private async order(): Promise<string[]> {
+    if (this.bases.length === 1) return this.bases;
+    const first = (b: string): string[] => [b, ...this.bases.filter((x) => x !== b)];
+    if (this.picked && Date.now() - this.picked.at < STICKY_MS) return first(this.picked.base);
+    for (const b of this.bases) {
+      try {
+        const r = await fetch(new URL('/api/health', b), { signal: AbortSignal.timeout(PROBE_MS) });
+        const h = (await r.json()) as { locked?: boolean };
+        if (r.ok && !h.locked) {
+          this.picked = { base: b, at: Date.now() };
+          return first(b);
+        }
+      } catch {
+        /* down or unreachable: try the next one */
+      }
+    }
+    return this.bases; // nothing healthy: try them in order and report what fails
+  }
 
   /** Used by `secrets login` / `secrets unlock` once the user has typed a password. */
   usePassword(password: string): void {
@@ -75,25 +122,41 @@ export class SecretdClient {
     path: string,
     opts: { query?: Record<string, string | number | undefined>; body?: unknown } = {},
   ): Promise<T> {
-    const url = new URL(path, this.baseUrl);
+    const query = new URLSearchParams();
     for (const [k, v] of Object.entries(opts.query ?? {})) {
-      if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
+      if (v !== undefined && v !== '') query.set(k, String(v));
     }
-    const headers: Record<string, string> = { 'x-secretd-caller': this.caller };
-    if (this.password) headers['authorization'] = `Bearer ${this.password}`;
+    const headers = this.headers();
     if (opts.body !== undefined) headers['content-type'] = 'application/json';
 
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        headers,
-        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+    const order = await this.order();
+    let res: Response | null = null;
+    let lastError = '';
+    for (const [i, base] of order.entries()) {
+      const url = new URL(path, base);
+      url.search = query.toString();
+      try {
+        res = await fetch(url, {
+          method,
+          headers,
+          body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        });
+      } catch (err) {
+        this.picked = null;
+        lastError = err instanceof Error ? err.message : String(err);
+        continue;
+      }
+      // A locked primary cannot serve anything, so a replica that can is the better answer.
+      if (res.status === 423 && i < order.length - 1) {
+        this.picked = null;
+        continue;
+      }
+      this.lastBase = base;
+      break;
+    }
+    if (!res) {
       throw new ApiError(
-        `cannot reach secretd at ${this.baseUrl} (${msg}) — is the daemon running? try \`secrets serve\``,
+        `cannot reach secretd at ${order.join(' or ')} (${lastError}) — is the daemon running? try \`secrets serve\``,
         0,
       );
     }
@@ -108,7 +171,16 @@ export class SecretdClient {
   }
 
   health = () =>
-    this.req<{ ok: boolean; locked: boolean; initialised: boolean; secrets: number | null }>(
+    this.req<{
+      ok: boolean;
+      locked: boolean;
+      initialised: boolean;
+      secrets: number | null;
+      /** Present on a replica: this answer came from a copy of the primary. */
+      replica?: boolean;
+      /** On a replica: writes made here that the primary has not received yet. */
+      pending?: number;
+    }>(
       'GET',
       '/api/health',
     );
@@ -160,12 +232,36 @@ export class SecretdClient {
       body: { name, version },
     });
 
+  /** Runs the command HERE, in this process's machine and cwd. Only the values come from the daemon. */
   exec = (
     command: string,
     args: string[],
     secrets: Array<{ name: string; as?: string; mode?: string }>,
     opts: { cwd?: string; timeoutMs?: number } = {},
-  ) => this.req<ExecResponse>('POST', '/api/exec', { body: { command, args, secrets, ...opts } });
+  ): Promise<ExecResponse> =>
+    runWithSecrets(
+      async (name) => {
+        const r = await this.get(name);
+        return { type: r.type, value: r.value };
+      },
+      command,
+      args,
+      secrets as SecretMapping[],
+      { timeoutMs: 120_000, ...opts },
+    );
+
+  /** A consistent copy of the whole (still encrypted) vault file, from the first daemon listed. */
+  async exportSnapshot(): Promise<Buffer> {
+    const base = this.bases[0]!;
+    let res: Response;
+    try {
+      res = await fetch(new URL('/api/export', base), { headers: this.headers() });
+    } catch (err) {
+      throw new ApiError(`cannot reach secretd at ${base} (${err instanceof Error ? err.message : String(err)})`, 0);
+    }
+    if (!res.ok) throw new ApiError(`export from ${base} failed: ${res.status} ${await res.text()}`, res.status);
+    return Buffer.from(await res.arrayBuffer());
+  }
 
   backup = () => this.req<{ path: string; bytes: number; pruned: number }>('POST', '/api/backup');
 
@@ -174,12 +270,10 @@ export class SecretdClient {
 
   /** Streams the live activity feed, invoking `onLine` for each event. */
   async streamLogs(onLine: (line: string, event: Record<string, unknown>) => void, follow = true): Promise<void> {
-    const url = new URL('/api/logs', this.baseUrl);
+    const url = new URL('/api/logs', (await this.order())[0]);
     url.searchParams.set('follow', follow ? '1' : '0');
-    const headers: Record<string, string> = { 'x-secretd-caller': this.caller };
-    if (this.password) headers['authorization'] = `Bearer ${this.password}`;
 
-    const res = await fetch(url, { headers });
+    const res = await fetch(url, { headers: this.headers() });
     if (!res.ok || !res.body) throw new ApiError(`log stream failed: ${res.status}`, res.status);
 
     const reader = res.body.getReader();

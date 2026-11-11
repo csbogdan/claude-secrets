@@ -122,6 +122,33 @@ in cleartext. Note the shape of that: unlike a token, a sniffed password also de
 `vault.db` and every backup, offline and forever. Deliberate choice for a trusted LAN;
 see SPEC.md.
 
+## A replica on a second Mac
+
+The mini stays the primary. A laptop keeps a local copy that is always available:
+
+```sh
+cd ~/IQ/claude_secrets && ./scripts/install.sh --replica http://macmini:7777
+secrets login          # the same vault password
+set -Ux SECRETD_URL http://macmini:7777,http://127.0.0.1:7777   # fish; the CLI fails over too
+```
+
+- **Failover.** `SECRETD_URL` lists daemons primary-first. Every CLI and MCP call goes to
+  the first one that is up and unlocked, so the laptop uses the mini when it answers and
+  its own copy when it does not. The MCP registration gets the same list.
+- **Sync.** launchd runs `secrets replica-sync` hourly and at login. It downloads a
+  consistent snapshot from the mini's `/api/export`, stops the local daemon, swaps the
+  file in and starts it again. Mini unreachable means nothing changes.
+- **Writes on the replica.** They work, and are journaled by name only in
+  `~/.secretd/replica-outbox.jsonl`. The next sync replays them onto the mini before
+  downloading, so nothing is lost. Only the latest value per secret is replayed. If the
+  same secret also changed on the mini meanwhile, the replica's value becomes the newest
+  version and the mini's stays in history.
+- **No OAuth refresh on the replica.** Rotating a refresh token on a copy would kill the
+  primary's, so an expired token comes back stale until the mini is reachable.
+- **Local exec.** `secrets exec` and `run_with_secrets` run the command on the machine
+  that asked, never on the daemon's host.
+- Log: `~/.secretd/logs/replica-sync.log`. The replica daemon binds `127.0.0.1` only.
+
 ## Move to another Mac
 
 The whole vault is one encrypted file plus the password in your head. On the old machine:
@@ -208,7 +235,10 @@ tail -f ~/.secretd/logs/secretd.log
 ```
 
 Backups: nightly `VACUUM INTO` snapshot to `~/.secretd/backups/`, 30-day retention,
-encrypted with the same master key.
+encrypted with the same master key. Offsite: `scripts/backup-github.sh` pushes a fresh
+snapshot daily at 04:00 to the private repo `csbogdan/secretd-backup` (launchd agent
+`com.stefan.secretd-backup`; `./scripts/backup-github.sh --install` on a new Mac,
+log in `~/.secretd/logs/github-backup.log`).
 
 ## Layout
 

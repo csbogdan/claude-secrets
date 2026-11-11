@@ -35,6 +35,21 @@ search_secrets("the thing that sends texts") -> twilio/auth-token
    - **`get_secret`** only when the value itself must be reasoned about, transformed,
      or shown to the user.
 
+## Where things run
+
+- **`run_with_secrets` runs the command on THIS machine**, in the current working
+  directory: the one Claude is working on, laptop or mini. Only the secret values come
+  from the vault daemon, wherever it lives. Relative paths, local files and local tools
+  all behave exactly as in a normal Bash call.
+- **Every call tries the primary vault first and falls back to a local replica**
+  automatically when the primary is unreachable or locked. Reads, writes and
+  `run_with_secrets` all work the same either way; do nothing differently.
+- A write made while the replica answered is queued and replayed onto the primary at the
+  next hourly sync. `vault_status` shows `replica: true` and the `pending` count when
+  that is the case. Mention it only if the user asks where a write went.
+- The replica never refreshes OAuth tokens, so an expired one comes back with
+  `stale: true` until the primary is reachable again.
+
 ## Prefer run_with_secrets
 
 ```
@@ -106,9 +121,11 @@ destroyed. `delete_secret` **is** destructive and removes all history: confirm f
 
 ## When things fail
 
-- **"vault is locked"** — the operator must run `secrets unlock` on the host. You cannot
-  fix this; say so and stop.
+- **"vault is locked"** — every daemon tried was locked or down. The operator must run
+  `secrets unlock` on the host. You cannot fix this; say so and stop.
+- **"cannot reach secretd at A or B"** — neither the primary nor the replica answered.
+  Say so and stop; do not retry in a loop.
 - **404 with candidates** — the error lists the closest names. Confirm with
   `search_secrets` before retrying; do not blind-retry a different guess.
-- **"Unauthorised"** — `secrets-mcp` has a stale token. The operator needs to update
-  `SECRETD_TOKEN` from `~/.secretd/token`.
+- **"Unauthorised"** — this machine holds the wrong vault password. The operator runs
+  `secrets login` with the vault password.
